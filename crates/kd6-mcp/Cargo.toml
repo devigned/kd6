@@ -1,0 +1,28 @@
+[package]
+name = "kd6-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MCP (Model Context Protocol) server for KD6 OMS"
+
+[dependencies]
+kd6-core = { path = "../kd6-core" }
+kd6-sqlite = { path = "../kd6-sqlite" }
+
+rmcp = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+anyhow = "1"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+kd6-sqlite = { path = "../kd6-sqlite" }

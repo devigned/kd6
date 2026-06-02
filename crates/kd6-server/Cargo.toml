@@ -1,0 +1,26 @@
+[package]
+name = "kd6-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kd6-core = { path = "../kd6-core" }
+kd6-sqlite = { path = "../kd6-sqlite" }
+axum = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+jsonwebtoken = { workspace = true }
+anyhow = "1"
+
+[dev-dependencies]
+axum-test = "17"
+kd6-sqlite = { path = "../kd6-sqlite" }
