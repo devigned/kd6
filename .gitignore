@@ -25,6 +25,13 @@ target
 node_modules/
 dist/
 
+# Python (examples)
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.env
+
 # SQLite runtime files
 *.db
 *.db-shm
