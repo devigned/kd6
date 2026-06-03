@@ -93,10 +93,12 @@ The companion [Research Report](./research.md) provides detailed background on e
 
 A **Memory Store** is a named, configured container for memories. Each tenant has one or more stores. A store is the primary unit of configuration, isolation, and lifecycle management.
 
+Store names are **immutable** after creation and serve as the primary API identifier. All store-scoped API paths use the store name (not an internal ID). Names MUST be unique within a tenant.
+
 ```yaml
 MemoryStore:
-  id: string (UUID)
-  name: string
+  id: string (UUID, internal)              # internal identifier, never used in API paths
+  name: string                             # immutable, unique per tenant, used in URL paths
   tenant_id: string
   region: string                          # data sovereignty
   config:
@@ -116,7 +118,7 @@ MemoryStore:
 
 #### 4.1.1 Default Store and Auto-Provisioning
 
-Implementations MAY support a **default store** identified by the well-known alias `_default`. When enabled, any API call that would normally require a `store_id` path parameter MAY use `_default` as the store identifier.
+Implementations MAY support a **default store** identified by the well-known alias `_default`. When enabled, any API call that would normally require a `store_name` path parameter MAY use `_default` as the store name.
 
 When auto-provisioning is enabled and a write operation (memory creation, upsert) targets a store or tenant that does not yet exist, the service MUST lazily create the missing entities before completing the write:
 
@@ -306,27 +308,27 @@ AgentParticipant:
 ```
 POST   /v1/stores                           # Create a memory store
 GET    /v1/stores                           # List stores (filtered by tenant)
-GET    /v1/stores/{store_id}                # Get store details + capabilities
-PATCH  /v1/stores/{store_id}                # Update store configuration
-DELETE /v1/stores/{store_id}                # Delete store (with policy enforcement)
+GET    /v1/stores/{store_name}                # Get store details + capabilities
+PATCH  /v1/stores/{store_name}                # Update store configuration
+DELETE /v1/stores/{store_name}                # Delete store (with policy enforcement)
 ```
 
 ### 5.2 Memory CRUD
 
 ```
-POST   /v1/stores/{store_id}/memories                # Create memory entry (supports upsert, see 4.3.2)
-GET    /v1/stores/{store_id}/memories/{memory_id}     # Get by ID
-PATCH  /v1/stores/{store_id}/memories/{memory_id}     # Update entry (versioned)
-DELETE /v1/stores/{store_id}/memories/{memory_id}     # Delete entry (audited)
-GET    /v1/stores/{store_id}/memories                 # List with filters + pagination
+POST   /v1/stores/{store_name}/memories                # Create memory entry (supports upsert, see 4.3.2)
+GET    /v1/stores/{store_name}/memories/{memory_id}     # Get by ID
+PATCH  /v1/stores/{store_name}/memories/{memory_id}     # Update entry (versioned)
+DELETE /v1/stores/{store_name}/memories/{memory_id}     # Delete entry (audited)
+GET    /v1/stores/{store_name}/memories                 # List with filters + pagination
 ```
 
-The `store_id` path parameter accepts either a concrete store UUID or the well-known alias `_default` when default store support is enabled (see 4.1.1). This alias resolution applies to all store-scoped endpoints across the API surface.
+The `store_name` path parameter accepts any store name that is unique within the tenant. The well-known alias `_default` is supported when default store support is enabled (see 4.1.1). Store names are immutable after creation.
 
 ### 5.3 Memory Search
 
 ```http
-POST /v1/stores/{store_id}/search
+POST /v1/stores/{store_name}/search
 Content-Type: application/json
 
 {
@@ -354,36 +356,36 @@ When the store has a configured embedding provider (see section 8), the `embeddi
 ### 5.4 Memory Lifecycle
 
 ```
-POST   /v1/stores/{store_id}/compact         # Trigger compaction (merge similar memories)
-POST   /v1/stores/{store_id}/archive         # Move old memories to archival layer
-POST   /v1/stores/{store_id}/summarize       # Summarize layer(s) into higher-level memory
-POST   /v1/stores/{store_id}/migrate         # Migrate memories between layers
-GET    /v1/stores/{store_id}/lifecycle/stats  # Memory health, usage stats, layer sizes
-DELETE /v1/stores/{store_id}/expired          # Purge expired entries
+POST   /v1/stores/{store_name}/compact         # Trigger compaction (merge similar memories)
+POST   /v1/stores/{store_name}/archive         # Move old memories to archival layer
+POST   /v1/stores/{store_name}/summarize       # Summarize layer(s) into higher-level memory
+POST   /v1/stores/{store_name}/migrate         # Migrate memories between layers
+GET    /v1/stores/{store_name}/lifecycle/stats  # Memory health, usage stats, layer sizes
+DELETE /v1/stores/{store_name}/expired          # Purge expired entries
 ```
 
 ### 5.5 Memory Inheritance & Sharing
 
 ```
-POST   /v1/stores/{store_id}/inherit                    # Create inheritance relationship
-DELETE /v1/stores/{store_id}/inherit/{inheritance_id}    # Revoke inheritance
-POST   /v1/stores/{store_id}/bubble-up                  # Child returns results to parent
+POST   /v1/stores/{store_name}/inherit                    # Create inheritance relationship
+DELETE /v1/stores/{store_name}/inherit/{inheritance_id}    # Revoke inheritance
+POST   /v1/stores/{store_name}/bubble-up                  # Child returns results to parent
 
-POST   /v1/stores/{store_id}/shared-spaces              # Create shared memory space
-GET    /v1/stores/{store_id}/shared-spaces               # List shared spaces
-GET    /v1/stores/{store_id}/shared-spaces/{space_id}    # Get space details
-POST   /v1/stores/{store_id}/shared-spaces/{space_id}/join    # Add agent to space
-DELETE /v1/stores/{store_id}/shared-spaces/{space_id}/leave   # Remove agent from space
-DELETE /v1/stores/{store_id}/shared-spaces/{space_id}         # Delete shared space
+POST   /v1/stores/{store_name}/shared-spaces              # Create shared memory space
+GET    /v1/stores/{store_name}/shared-spaces               # List shared spaces
+GET    /v1/stores/{store_name}/shared-spaces/{space_id}    # Get space details
+POST   /v1/stores/{store_name}/shared-spaces/{space_id}/join    # Add agent to space
+DELETE /v1/stores/{store_name}/shared-spaces/{space_id}/leave   # Remove agent from space
+DELETE /v1/stores/{store_name}/shared-spaces/{space_id}         # Delete shared space
 ```
 
 ### 5.6 Audit & Compliance
 
 ```
-GET    /v1/stores/{store_id}/audit                           # Query audit log (paginated)
-GET    /v1/stores/{store_id}/memories/{memory_id}/audit      # Entry-level audit trail
-POST   /v1/stores/{store_id}/export                          # Export for compliance review
-POST   /v1/stores/{store_id}/purge                           # GDPR right-to-erasure
+GET    /v1/stores/{store_name}/audit                           # Query audit log (paginated)
+GET    /v1/stores/{store_name}/memories/{memory_id}/audit      # Entry-level audit trail
+POST   /v1/stores/{store_name}/export                          # Export for compliance review
+POST   /v1/stores/{store_name}/purge                           # GDPR right-to-erasure
 ```
 
 ---
@@ -415,7 +417,7 @@ An OMS-compliant memory service SHOULD expose itself as an MCP Server [18]:
   "version": "1.0.0",
   "capabilities": {
     "resources": [
-      { "uri": "memory://stores/{store_id}/memories", "name": "Agent Memories" }
+      { "uri": "memory://stores/{store_name}/memories", "name": "Agent Memories" }
     ],
     "tools": [
       { "name": "memory_search", "description": "Search agent memory" },
@@ -555,7 +557,7 @@ When `embedding` is `null` or omitted, the store operates in **pass-through mode
 
 When a store has a configured embedding provider, the service MUST apply the following rules. These rules implement the client-side/server-side coexistence described in section 8.1.1: server-side embedding is the default, and client-provided embeddings are accepted as an opt-in override.
 
-#### 8.4.1 On Memory Write (`POST /v1/stores/{store_id}/memories`)
+#### 8.4.1 On Memory Write (`POST /v1/stores/{store_name}/memories`)
 
 1. **Client-side override:** If the request includes a non-null `embedding` field, use the caller-provided embedding as-is. The service MUST validate that the dimensionality matches the store's configured model and reject mismatches with `422 Unprocessable Entity`.
 2. **Server-side default:** If the request omits `embedding` (or sets it to `null`) and a provider is configured, the service MUST extract text from `content` and compute an embedding before storing:
@@ -563,15 +565,15 @@ When a store has a configured embedding provider, the service MUST apply the fol
    - For structured (JSON object) content: serialize to a canonical text representation. Implementations SHOULD concatenate string-typed leaf values. Implementations MAY accept a `content_text_field` store config option to specify which field(s) to embed (e.g., `"text"`, `"body"`).
 3. **Pass-through mode:** If the request omits `embedding` and no provider is configured (pass-through mode), the memory is stored without an embedding. Vector search will not return this entry, but keyword search will.
 4. The computed or provided embedding MUST be stored alongside the memory entry and returned in subsequent reads (when the `embedding` field is requested).
-5. Batch write operations (`POST /v1/stores/{store_id}/batch`) MUST apply the same rules per entry. Implementations SHOULD batch embedding calls to the provider for efficiency.
+5. Batch write operations (`POST /v1/stores/{store_name}/batch`) MUST apply the same rules per entry. Implementations SHOULD batch embedding calls to the provider for efficiency.
 
-#### 8.4.2 On Memory Update (`PATCH /v1/stores/{store_id}/memories/{memory_id}`)
+#### 8.4.2 On Memory Update (`PATCH /v1/stores/{store_name}/memories/{memory_id}`)
 
 1. If the update modifies `content` and includes a new `embedding`, use the caller-provided embedding (client-side override). Validate dimensionality.
 2. If the update modifies `content` but omits `embedding`, the service MUST recompute the embedding from the new content using the configured provider (server-side default).
 3. If the update does not modify `content`, the existing embedding MUST be preserved regardless of whether `embedding` is present in the request.
 
-#### 8.4.3 On Search (`POST /v1/stores/{store_id}/search`)
+#### 8.4.3 On Search (`POST /v1/stores/{store_name}/search`)
 
 1. **Client-side override:** If the request includes a non-null `embedding` field, use it as the query vector for similarity search. The service does not embed the `query` string.
 2. **Server-side default:** If the request omits `embedding`, the service MUST compute a query embedding from the `query` string using the provider's `embed_query` method before performing similarity search.
@@ -586,7 +588,7 @@ This means a minimal search request — `{"query": "user preferences", "top_k": 
 
 Each stored embedding SHOULD be tagged with the `model_id` that produced it. Implementations MAY store this as metadata on the memory entry or as a store-level field in the database schema.
 
-When a store's embedding model is changed (via `PATCH /v1/stores/{store_id}`), the service MUST NOT silently mix embeddings from different models in search results, as this produces meaningless similarity scores. Implementations MUST choose one of the following strategies:
+When a store's embedding model is changed (via `PATCH /v1/stores/{store_name}`), the service MUST NOT silently mix embeddings from different models in search results, as this produces meaningless similarity scores. Implementations MUST choose one of the following strategies:
 
 1. **Lazy re-embedding (recommended):** Mark all existing entries as needing re-embedding. Recompute embeddings in the background or on next read. Search results during the migration period may exclude stale entries or return them with degraded scores.
 2. **Eager re-embedding:** Immediately recompute all embeddings in the store. This may be expensive for large stores but ensures instant consistency.
@@ -627,7 +629,7 @@ class EmbeddingCapabilities:
 This allows clients to discover which embedding strategy to use:
 
 ```http
-GET /v1/stores/{store_id}
+GET /v1/stores/{store_name}
 → { "capabilities": { "embedding": { "server_side_embedding": true, "model_id": "text-embedding-3-small", "dimensions": 1536 } } }
 ```
 

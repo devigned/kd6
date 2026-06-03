@@ -111,7 +111,7 @@ than the entry's scope. `tenant_id` is the hard isolation boundary.
 
 ### API Surface
 
-REST API rooted under `/v1/stores/{store_id}/`:
+REST API rooted under `/v1/stores/{store_name}/`:
 
 - **Health/capabilities:** `GET /health`, `GET /capabilities`
 - **Store management:** CRUD on `/v1/stores`
@@ -155,3 +155,8 @@ transport. Tools: `create_store`, `list_stores`, `create_memory`, `get_memory`,
 - Backend capabilities are declared, not assumed -- always check
   `ProviderCapabilities` before using optional features.
 - Tests use in-memory SQLite (`sqlite::memory:`) and require no external setup.
+- **Store names are the primary API identifier** -- all store-scoped API paths
+  use the store name (e.g., `/v1/stores/my-store/memories`), not UUIDs.
+  Store names are immutable after creation and unique per tenant.
+- The `OmsProvider` trait internally uses UUIDs for store references. The
+  server layer resolves names to UUIDs via `get_store_by_name()`.
