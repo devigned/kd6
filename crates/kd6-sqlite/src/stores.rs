@@ -147,6 +147,22 @@ pub(crate) async fn list_stores(
     rows.iter().map(row_to_store).collect()
 }
 
+pub(crate) async fn get_store_by_name(
+    pool: &SqlitePool,
+    tenant_id: &str,
+    name: &str,
+) -> Result<MemoryStore, OmsError> {
+    let row = sqlx::query("SELECT * FROM stores WHERE tenant_id = ? AND name = ?")
+        .bind(tenant_id)
+        .bind(name)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| map_db_error("query store by name", e))?
+        .ok_or_else(|| OmsError::StoreNotFound(name.to_string()))?;
+
+    row_to_store(&row)
+}
+
 pub(crate) async fn get_or_create_store(
     pool: &SqlitePool,
     tenant_id: &str,
@@ -222,7 +238,7 @@ pub(crate) async fn update_store(
     // Fetch existing store (also verifies tenant ownership)
     let existing = crate::stores::get_store(pool, tenant_id, store_id).await?;
 
-    let name = request.name.unwrap_or(existing.name);
+    // Name is immutable after creation — only config and metadata can change
     let config = request.config.unwrap_or(existing.config);
     let metadata = request.metadata.unwrap_or(existing.metadata);
     let now_str = Utc::now().to_rfc3339();
@@ -242,10 +258,9 @@ pub(crate) async fn update_store(
         .map_err(|e| map_db_error("begin transaction", e))?;
 
     let result = match sqlx::query(
-        "UPDATE stores SET name = ?, config_json = ?, metadata_json = ?, updated_at = ?
+        "UPDATE stores SET config_json = ?, metadata_json = ?, updated_at = ?
          WHERE id = ? AND tenant_id = ?",
     )
-    .bind(&name)
     .bind(&config_json)
     .bind(&metadata_json)
     .bind(&now_str)
@@ -277,7 +292,6 @@ pub(crate) async fn update_store(
         Some(serde_json::json!({
             "entity": "store",
             "store_id": store_id.to_string(),
-            "name": &name,
         })),
     )
     .await

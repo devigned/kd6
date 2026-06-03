@@ -68,6 +68,14 @@ impl OmsProvider for SqliteProvider {
         crate::stores::list_stores(&self.pool, tenant_id).await
     }
 
+    async fn get_store_by_name(
+        &self,
+        tenant_id: &str,
+        name: &str,
+    ) -> Result<MemoryStore, OmsError> {
+        crate::stores::get_store_by_name(&self.pool, tenant_id, name).await
+    }
+
     async fn get_or_create_store(
         &self,
         tenant_id: &str,
@@ -444,15 +452,19 @@ mod tests {
                 "tenant-1",
                 store.id,
                 UpdateStoreRequest {
-                    name: Some("renamed".into()),
-                    config: None,
+                    config: Some(StoreConfig {
+                        default_ttl_seconds: Some(3600),
+                        ..Default::default()
+                    }),
                     metadata: None,
                 },
             )
             .await
             .unwrap();
 
-        assert_eq!(updated.name, "renamed");
+        // Name is immutable — should not change
+        assert_eq!(updated.name, "original");
+        assert_eq!(updated.config.default_ttl_seconds, Some(3600));
         assert!(updated.updated_at > store.updated_at);
     }
 
@@ -477,9 +489,8 @@ mod tests {
                 "tenant-2",
                 store.id,
                 UpdateStoreRequest {
-                    name: Some("hijacked".into()),
                     config: None,
-                    metadata: None,
+                    metadata: Some([("evil".into(), "true".into())].into()),
                 },
             )
             .await;
@@ -1910,5 +1921,119 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn get_store_by_name_returns_store() {
+        let provider = test_provider().await;
+        let store = provider
+            .create_store(
+                "tenant-1",
+                CreateStoreRequest {
+                    name: "named-store".into(),
+                    region: None,
+                    config: StoreConfig::default(),
+                    metadata: Default::default(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let found = provider
+            .get_store_by_name("tenant-1", "named-store")
+            .await
+            .unwrap();
+        assert_eq!(found.id, store.id);
+        assert_eq!(found.name, "named-store");
+    }
+
+    #[tokio::test]
+    async fn get_store_by_name_not_found() {
+        let provider = test_provider().await;
+        let result = provider.get_store_by_name("tenant-1", "nonexistent").await;
+        assert!(matches!(result, Err(OmsError::StoreNotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn get_store_by_name_tenant_isolation() {
+        let provider = test_provider().await;
+        provider
+            .create_store(
+                "tenant-a",
+                CreateStoreRequest {
+                    name: "shared-name".into(),
+                    region: None,
+                    config: StoreConfig::default(),
+                    metadata: Default::default(),
+                },
+            )
+            .await
+            .unwrap();
+
+        // Same name, different tenant — should not be found
+        let result = provider.get_store_by_name("tenant-b", "shared-name").await;
+        assert!(matches!(result, Err(OmsError::StoreNotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn same_name_different_tenants_allowed() {
+        let provider = test_provider().await;
+        let a = provider
+            .create_store(
+                "tenant-a",
+                CreateStoreRequest {
+                    name: "my-store".into(),
+                    region: None,
+                    config: StoreConfig::default(),
+                    metadata: Default::default(),
+                },
+            )
+            .await
+            .unwrap();
+        let b = provider
+            .create_store(
+                "tenant-b",
+                CreateStoreRequest {
+                    name: "my-store".into(),
+                    region: None,
+                    config: StoreConfig::default(),
+                    metadata: Default::default(),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_ne!(a.id, b.id);
+        assert_eq!(a.name, b.name);
+    }
+
+    #[tokio::test]
+    async fn duplicate_name_same_tenant_rejected() {
+        let provider = test_provider().await;
+        provider
+            .create_store(
+                "tenant-1",
+                CreateStoreRequest {
+                    name: "unique-store".into(),
+                    region: None,
+                    config: StoreConfig::default(),
+                    metadata: Default::default(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let result = provider
+            .create_store(
+                "tenant-1",
+                CreateStoreRequest {
+                    name: "unique-store".into(),
+                    region: None,
+                    config: StoreConfig::default(),
+                    metadata: Default::default(),
+                },
+            )
+            .await;
+        assert!(result.is_err(), "duplicate name in same tenant should fail");
     }
 }

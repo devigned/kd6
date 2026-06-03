@@ -109,11 +109,13 @@ async fn test_create_get_list_update_and_delete_store() {
     assert_eq!(stores.len(), 1);
 
     let response = tenant_header(server.patch(&format!("/v1/stores/{store_id}")), tenant)
-        .json(&json!({ "name": "renamed-store" }))
+        .json(&json!({ "config": { "default_ttl_seconds": 3600 } }))
         .await;
     response.assert_status_ok();
     let updated: Value = response.json();
-    assert_eq!(updated["name"], "renamed-store");
+    // Name is immutable — should not change
+    assert_eq!(updated["name"], "my-store");
+    assert_eq!(updated["config"]["default_ttl_seconds"], 3600);
 
     let response = tenant_header(server.delete(&format!("/v1/stores/{store_id}")), tenant).await;
     response.assert_status(StatusCode::NO_CONTENT);
