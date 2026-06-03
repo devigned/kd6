@@ -9,6 +9,7 @@ description = "MCP (Model Context Protocol) server for KD6 OMS"
 [dependencies]
 kd6-core = { path = "../kd6-core" }
 kd6-sqlite = { path = "../kd6-sqlite" }
+kd6-embed = { path = "../kd6-embed" }
 
 rmcp = { workspace = true }
 schemars = { workspace = true }
@@ -26,3 +27,4 @@ anyhow = "1"
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 kd6-sqlite = { path = "../kd6-sqlite" }
+async-trait = { workspace = true }

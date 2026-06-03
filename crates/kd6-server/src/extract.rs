@@ -6,8 +6,19 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::de::DeserializeOwned;
 use serde_json::json;
+use uuid::Uuid;
+
+use crate::state::AppState;
+
+/// The well-known default tenant identifier (OMS spec 4.4.1).
+pub const DEFAULT_TENANT: &str = "_default";
+
+/// The well-known default store alias (OMS spec 4.1.1).
+pub const DEFAULT_STORE_ALIAS: &str = "_default";
 
 /// Extracts tenant identity from `X-Tenant-ID` header.
+/// Falls back to `_default` when the header is absent and default tenant
+/// resolution is enabled in ServerConfig (OMS spec 4.4.1).
 pub struct TenantId(pub String);
 
 pub struct TenantIdRejection(&'static str);
@@ -18,18 +29,49 @@ impl IntoResponse for TenantIdRejection {
     }
 }
 
-impl<S: Send + Sync> FromRequestParts<S> for TenantId {
+impl FromRequestParts<AppState> for TenantId {
     type Rejection = TenantIdRejection;
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        parts
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let header_value = parts
             .headers
             .get("X-Tenant-ID")
             .and_then(|v| v.to_str().ok())
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
-            .map(|s| TenantId(s.to_string()))
-            .ok_or(TenantIdRejection("X-Tenant-ID header is required"))
+            .map(|s| s.to_string());
+
+        match header_value {
+            Some(tenant) => Ok(TenantId(tenant)),
+            None if state.config.default_tenant => Ok(TenantId(DEFAULT_TENANT.to_string())),
+            None => Err(TenantIdRejection("X-Tenant-ID header is required")),
+        }
+    }
+}
+
+/// Resolved store identifier -- either a concrete UUID or the `_default` alias.
+#[derive(Debug, Clone)]
+pub enum StoreRef {
+    Id(Uuid),
+    Default,
+}
+
+impl<'de> serde::Deserialize<'de> for StoreRef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        if s == DEFAULT_STORE_ALIAS {
+            Ok(StoreRef::Default)
+        } else {
+            Uuid::parse_str(&s)
+                .map(StoreRef::Id)
+                .map_err(serde::de::Error::custom)
+        }
     }
 }
 
@@ -119,5 +161,38 @@ where
             .await
             .map_err(PathIdRejection)?;
         Ok(PathId(value))
+    }
+}
+
+/// Resolve a `StoreRef` to a concrete UUID. When the reference is `_default`
+/// and auto-provisioning is enabled, the default store is created on demand.
+pub async fn resolve_store(
+    store_ref: &StoreRef,
+    tenant_id: &str,
+    state: &AppState,
+) -> Result<Uuid, kd6_core::OmsError> {
+    match store_ref {
+        StoreRef::Id(id) => Ok(*id),
+        StoreRef::Default => {
+            if !state.config.auto_provision {
+                return Err(kd6_core::OmsError::InvalidInput(
+                    "_default store alias is disabled; create a store explicitly".into(),
+                ));
+            }
+            let store = state
+                .provider
+                .get_or_create_store(
+                    tenant_id,
+                    DEFAULT_STORE_ALIAS,
+                    kd6_core::models::CreateStoreRequest {
+                        name: DEFAULT_STORE_ALIAS.to_string(),
+                        region: None,
+                        config: Default::default(),
+                        metadata: Default::default(),
+                    },
+                )
+                .await?;
+            Ok(store.id)
+        }
     }
 }

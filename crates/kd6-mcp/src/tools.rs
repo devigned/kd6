@@ -6,6 +6,7 @@ use rmcp::{tool, tool_handler, tool_router, ServerHandler};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use kd6_core::embedding::{auto_embed_content, auto_embed_query, EmbeddingProvider};
 use kd6_core::models::{
     AccessControl, CreateEdgeRequest, CreateMemoryRequest, CreateStoreRequest,
     GraphTraversalRequest, MemoryLayer, MemoryScope, SearchQuery, StoreConfig,
@@ -16,16 +17,23 @@ use kd6_core::OmsProvider;
 #[derive(Clone)]
 pub struct Kd6McpServer {
     provider: Arc<dyn OmsProvider>,
+    embedder: Arc<dyn EmbeddingProvider>,
     #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
 }
 
 impl Kd6McpServer {
-    pub fn new(provider: Arc<dyn OmsProvider>) -> Self {
+    pub fn new(provider: Arc<dyn OmsProvider>, embedder: Arc<dyn EmbeddingProvider>) -> Self {
         Self {
             provider,
+            embedder,
             tool_router: Self::tool_router(),
         }
+    }
+
+    /// Return the list of registered MCP tools (useful for testing/introspection).
+    pub fn list_tools(&self) -> Vec<rmcp::model::Tool> {
+        self.tool_router.list_all()
     }
 }
 
@@ -52,18 +60,22 @@ pub struct ListStoresParams {
     pub tenant_id: String,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct CreateMemoryParams {
     /// Tenant identifier.
+    #[serde(default)]
     pub tenant_id: String,
     /// Store ID to create the memory in.
+    #[serde(default)]
     pub store_id: String,
     /// Memory layer: working, episodic, semantic, procedural, or archival.
     #[serde(default = "default_layer_str")]
     pub layer: String,
     /// The memory content as a JSON string or plain text.
-    pub content: String,
+    #[serde(default)]
+    pub content: serde_json::Value,
     /// Agent that owns this memory.
+    #[serde(default)]
     pub owner_agent_id: String,
     /// Tags for categorization.
     #[serde(default)]
@@ -71,6 +83,16 @@ pub struct CreateMemoryParams {
     /// Optional entity type for graph nodes.
     #[serde(default)]
     pub entity_type: Option<String>,
+    /// Optional upsert key for atomic create-or-replace (see OMS spec 4.3.2).
+    #[serde(default)]
+    pub upsert_key: Option<String>,
+    /// Optional scope fields for finer-grained visibility.
+    #[serde(default)]
+    pub scope_user_id: Option<String>,
+    #[serde(default)]
+    pub scope_agent_id: Option<String>,
+    #[serde(default)]
+    pub scope_session_id: Option<String>,
 }
 
 fn default_layer_str() -> String {
@@ -168,6 +190,30 @@ pub struct StoreStatsParams {
     pub tenant_id: String,
     /// Store ID.
     pub store_id: String,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct GdprPurgeParams {
+    /// Tenant identifier.
+    pub tenant_id: String,
+    /// Store ID.
+    pub store_id: String,
+    /// Scope to purge. All memories matching this scope will be permanently deleted
+    /// and associated audit entries will be anonymized.
+    #[serde(default)]
+    pub scope_org_id: Option<String>,
+    #[serde(default)]
+    pub scope_team_id: Option<String>,
+    #[serde(default)]
+    pub scope_project_id: Option<String>,
+    #[serde(default)]
+    pub scope_user_id: Option<String>,
+    #[serde(default)]
+    pub scope_agent_id: Option<String>,
+    #[serde(default)]
+    pub scope_session_id: Option<String>,
+    #[serde(default)]
+    pub scope_run_id: Option<String>,
 }
 
 // --- Tool result helper ---
@@ -277,8 +323,12 @@ impl Kd6McpServer {
             Err(e) => return err_json(e),
         };
 
-        let content = serde_json::from_str(&p.content)
-            .unwrap_or_else(|_| serde_json::json!({"text": p.content}));
+        let content: serde_json::Value =
+            if p.content.is_null() || p.content == serde_json::Value::String(String::new()) {
+                serde_json::Value::String(String::new())
+            } else {
+                p.content
+            };
 
         let request = CreateMemoryRequest {
             layer,
@@ -287,6 +337,9 @@ impl Kd6McpServer {
             owner_agent_id: p.owner_agent_id,
             scope: MemoryScope {
                 tenant_id: p.tenant_id.clone(),
+                user_id: p.scope_user_id,
+                agent_id: p.scope_agent_id,
+                session_id: p.scope_session_id,
                 ..Default::default()
             },
             tags: p.tags,
@@ -299,6 +352,21 @@ impl Kd6McpServer {
             valid_until: None,
             confidence: None,
             entity_type: p.entity_type,
+            upsert_key: p.upsert_key,
+        };
+
+        // Auto-embed content (OMS spec section 8.4.1)
+        let embedding =
+            match auto_embed_content(&*self.embedder, &request.content, request.embedding.clone())
+                .await
+            {
+                Ok(emb) => emb,
+                Err(e) => return err_json(e.to_string()),
+            };
+
+        let request = CreateMemoryRequest {
+            embedding,
+            ..request
         };
 
         match self
@@ -345,9 +413,15 @@ impl Kd6McpServer {
             Err(e) => return err_json(e),
         };
 
+        // Auto-embed query (OMS spec section 8.4.3)
+        let embedding = match auto_embed_query(&*self.embedder, &p.query, None).await {
+            Ok(emb) => emb,
+            Err(e) => return err_json(e.to_string()),
+        };
+
         let query = SearchQuery {
             query: p.query,
-            embedding: None,
+            embedding,
             layers: vec![],
             scope: None,
             top_k: p.top_k,
@@ -423,9 +497,10 @@ impl Kd6McpServer {
     }
 
     #[tool(
+        name = "traverse_graph",
         description = "Traverse the knowledge graph starting from a memory, following relationship edges"
     )]
-    pub async fn graph_traverse(&self, Parameters(p): Parameters<GraphTraverseParams>) -> String {
+    pub async fn traverse_graph(&self, Parameters(p): Parameters<GraphTraverseParams>) -> String {
         if let Err(e) = validate_tenant_id(&p.tenant_id) {
             return err_json(e);
         }
@@ -466,6 +541,39 @@ impl Kd6McpServer {
 
         match self.provider.stats(&p.tenant_id, store_id).await {
             Ok(stats) => ok_json(stats),
+            Err(e) => err_json(e.to_string()),
+        }
+    }
+
+    #[tool(
+        description = "GDPR purge: permanently delete all memories matching the given scope and anonymize related audit entries"
+    )]
+    pub async fn gdpr_purge(&self, Parameters(p): Parameters<GdprPurgeParams>) -> String {
+        if let Err(e) = validate_tenant_id(&p.tenant_id) {
+            return err_json(e);
+        }
+        let store_id = match parse_uuid(&p.store_id) {
+            Ok(id) => id,
+            Err(e) => return err_json(e),
+        };
+
+        let scope = MemoryScope {
+            tenant_id: p.tenant_id.clone(),
+            org_id: p.scope_org_id,
+            team_id: p.scope_team_id,
+            project_id: p.scope_project_id,
+            user_id: p.scope_user_id,
+            agent_id: p.scope_agent_id,
+            session_id: p.scope_session_id,
+            run_id: p.scope_run_id,
+        };
+
+        match self
+            .provider
+            .gdpr_purge(&p.tenant_id, store_id, scope)
+            .await
+        {
+            Ok(deleted) => ok_json(serde_json::json!({ "deleted": deleted })),
             Err(e) => err_json(e.to_string()),
         }
     }

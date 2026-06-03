@@ -1,3 +1,4 @@
+pub mod embed;
 pub mod error;
 pub mod extract;
 pub mod routes;
