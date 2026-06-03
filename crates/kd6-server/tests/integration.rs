@@ -96,9 +96,9 @@ async fn test_create_get_list_update_and_delete_store() {
     let store: Value = response.json();
     assert_eq!(store["name"], "my-store");
     assert_eq!(store["tenant_id"], tenant);
-    let store_id = store["id"].as_str().unwrap();
+    let store_name = store["name"].as_str().unwrap();
 
-    let response = tenant_header(server.get(&format!("/v1/stores/{store_id}")), tenant).await;
+    let response = tenant_header(server.get(&format!("/v1/stores/{store_name}")), tenant).await;
     response.assert_status_ok();
     let fetched: Value = response.json();
     assert_eq!(fetched["name"], "my-store");
@@ -108,28 +108,26 @@ async fn test_create_get_list_update_and_delete_store() {
     let stores: Vec<Value> = response.json();
     assert_eq!(stores.len(), 1);
 
-    let response = tenant_header(server.patch(&format!("/v1/stores/{store_id}")), tenant)
-        .json(&json!({ "name": "renamed-store" }))
+    let response = tenant_header(server.patch(&format!("/v1/stores/{store_name}")), tenant)
+        .json(&json!({ "config": { "default_ttl_seconds": 3600 } }))
         .await;
     response.assert_status_ok();
     let updated: Value = response.json();
-    assert_eq!(updated["name"], "renamed-store");
+    // Name is immutable — should not change
+    assert_eq!(updated["name"], "my-store");
+    assert_eq!(updated["config"]["default_ttl_seconds"], 3600);
 
-    let response = tenant_header(server.delete(&format!("/v1/stores/{store_id}")), tenant).await;
+    let response = tenant_header(server.delete(&format!("/v1/stores/{store_name}")), tenant).await;
     response.assert_status(StatusCode::NO_CONTENT);
 
-    let response = tenant_header(server.get(&format!("/v1/stores/{store_id}")), tenant).await;
+    let response = tenant_header(server.get(&format!("/v1/stores/{store_name}")), tenant).await;
     response.assert_status(StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
 async fn test_store_not_found_returns_404() {
     let server = test_app().await;
-    let response = tenant_header(
-        server.get("/v1/stores/00000000-0000-0000-0000-000000000000"),
-        "t1",
-    )
-    .await;
+    let response = tenant_header(server.get("/v1/stores/nonexistent-store"), "t1").await;
 
     response.assert_status(StatusCode::NOT_FOUND);
     let body: Value = response.json();
@@ -145,9 +143,9 @@ async fn test_tenant_isolation_for_stores() {
         .await;
     response.assert_status(StatusCode::CREATED);
     let store: Value = response.json();
-    let store_id = store["id"].as_str().unwrap();
+    let store_name = store["name"].as_str().unwrap();
 
-    let response = tenant_header(server.get(&format!("/v1/stores/{store_id}")), "tenant-b").await;
+    let response = tenant_header(server.get(&format!("/v1/stores/{store_name}")), "tenant-b").await;
     response.assert_status(StatusCode::NOT_FOUND);
 
     let response = tenant_header(server.get("/v1/stores"), "tenant-b").await;
@@ -166,10 +164,10 @@ async fn test_memory_crud_and_listing() {
         .await;
     response.assert_status(StatusCode::CREATED);
     let store: Value = response.json();
-    let store_id = store["id"].as_str().unwrap();
+    let store_name = store["name"].as_str().unwrap();
 
     let response = tenant_header(
-        server.post(&format!("/v1/stores/{store_id}/memories")),
+        server.post(&format!("/v1/stores/{store_name}/memories")),
         tenant,
     )
     .json(&json!({
@@ -187,7 +185,7 @@ async fn test_memory_crud_and_listing() {
     assert_eq!(memory["layer"], "semantic");
 
     let response = tenant_header(
-        server.get(&format!("/v1/stores/{store_id}/memories/{memory_id}")),
+        server.get(&format!("/v1/stores/{store_name}/memories/{memory_id}")),
         tenant,
     )
     .await;
@@ -196,7 +194,7 @@ async fn test_memory_crud_and_listing() {
     assert_eq!(fetched["content"]["text"], "hello world");
 
     let response = tenant_header(
-        server.get(&format!("/v1/stores/{store_id}/memories")),
+        server.get(&format!("/v1/stores/{store_name}/memories")),
         tenant,
     )
     .await;
@@ -206,7 +204,7 @@ async fn test_memory_crud_and_listing() {
     assert_eq!(page["items"].as_array().unwrap().len(), 1);
 
     let response = tenant_header(
-        server.patch(&format!("/v1/stores/{store_id}/memories/{memory_id}")),
+        server.patch(&format!("/v1/stores/{store_name}/memories/{memory_id}")),
         tenant,
     )
     .json(&json!({
@@ -220,14 +218,14 @@ async fn test_memory_crud_and_listing() {
     assert_eq!(updated["version"], 2);
 
     let response = tenant_header(
-        server.delete(&format!("/v1/stores/{store_id}/memories/{memory_id}")),
+        server.delete(&format!("/v1/stores/{store_name}/memories/{memory_id}")),
         tenant,
     )
     .await;
     response.assert_status(StatusCode::NO_CONTENT);
 
     let response = tenant_header(
-        server.get(&format!("/v1/stores/{store_id}/memories/{memory_id}")),
+        server.get(&format!("/v1/stores/{store_name}/memories/{memory_id}")),
         tenant,
     )
     .await;
@@ -244,10 +242,10 @@ async fn test_keyword_search() {
         .await;
     response.assert_status(StatusCode::CREATED);
     let store: Value = response.json();
-    let store_id = store["id"].as_str().unwrap();
+    let store_name = store["name"].as_str().unwrap();
 
     let response = tenant_header(
-        server.post(&format!("/v1/stores/{store_id}/memories")),
+        server.post(&format!("/v1/stores/{store_name}/memories")),
         tenant,
     )
     .json(&json!({
@@ -260,7 +258,7 @@ async fn test_keyword_search() {
     response.assert_status(StatusCode::CREATED);
 
     let response = tenant_header(
-        server.post(&format!("/v1/stores/{store_id}/search")),
+        server.post(&format!("/v1/stores/{store_name}/search")),
         tenant,
     )
     .json(&json!({
@@ -287,10 +285,10 @@ async fn test_graph_endpoints() {
         .await;
     response.assert_status(StatusCode::CREATED);
     let store: Value = response.json();
-    let store_id = store["id"].as_str().unwrap();
+    let store_name = store["name"].as_str().unwrap();
 
     let r1 = tenant_header(
-        server.post(&format!("/v1/stores/{store_id}/memories")),
+        server.post(&format!("/v1/stores/{store_name}/memories")),
         tenant,
     )
     .json(&json!({
@@ -304,7 +302,7 @@ async fn test_graph_endpoints() {
     let m1: Value = r1.json();
 
     let r2 = tenant_header(
-        server.post(&format!("/v1/stores/{store_id}/memories")),
+        server.post(&format!("/v1/stores/{store_name}/memories")),
         tenant,
     )
     .json(&json!({
@@ -318,7 +316,7 @@ async fn test_graph_endpoints() {
     let m2: Value = r2.json();
 
     let response = tenant_header(
-        server.post(&format!("/v1/stores/{store_id}/graph/edges")),
+        server.post(&format!("/v1/stores/{store_name}/graph/edges")),
         tenant,
     )
     .json(&json!({
@@ -331,7 +329,7 @@ async fn test_graph_endpoints() {
     let edge: Value = response.json();
 
     let response = tenant_header(
-        server.post(&format!("/v1/stores/{store_id}/graph/traverse")),
+        server.post(&format!("/v1/stores/{store_name}/graph/traverse")),
         tenant,
     )
     .json(&json!({
@@ -346,7 +344,7 @@ async fn test_graph_endpoints() {
 
     let edge_id = edge["id"].as_str().unwrap();
     let response = tenant_header(
-        server.delete(&format!("/v1/stores/{store_id}/graph/edges/{edge_id}")),
+        server.delete(&format!("/v1/stores/{store_name}/graph/edges/{edge_id}")),
         tenant,
     )
     .await;
@@ -363,10 +361,10 @@ async fn test_gdpr_purge_requires_scope() {
         .await;
     response.assert_status(StatusCode::CREATED);
     let store: Value = response.json();
-    let store_id = store["id"].as_str().unwrap();
+    let store_name = store["name"].as_str().unwrap();
 
     let response = tenant_header(
-        server.post(&format!("/v1/stores/{store_id}/gdpr/purge")),
+        server.post(&format!("/v1/stores/{store_name}/gdpr/purge")),
         tenant,
     )
     .json(&json!({}))
@@ -406,12 +404,12 @@ async fn test_body_limit_rejects_oversized_payload() {
         .await;
     response.assert_status(StatusCode::CREATED);
     let store: Value = response.json();
-    let store_id = store["id"].as_str().unwrap();
+    let store_name = store["name"].as_str().unwrap();
 
     // Build a payload exceeding 10 MB
     let big_text = "x".repeat(11 * 1024 * 1024);
     let response = tenant_header(
-        server.post(&format!("/v1/stores/{store_id}/memories")),
+        server.post(&format!("/v1/stores/{store_name}/memories")),
         tenant,
     )
     .json(&json!({
@@ -434,10 +432,10 @@ async fn test_tenant_isolation_for_memories() {
         .await;
     response.assert_status(StatusCode::CREATED);
     let store: Value = response.json();
-    let store_id = store["id"].as_str().unwrap();
+    let store_name = store["name"].as_str().unwrap();
 
     let response = tenant_header(
-        server.post(&format!("/v1/stores/{store_id}/memories")),
+        server.post(&format!("/v1/stores/{store_name}/memories")),
         "tenant-a",
     )
     .json(&json!({
@@ -452,21 +450,19 @@ async fn test_tenant_isolation_for_memories() {
     let memory_id = memory["id"].as_str().unwrap();
 
     let response = tenant_header(
-        server.get(&format!("/v1/stores/{store_id}/memories/{memory_id}")),
+        server.get(&format!("/v1/stores/{store_name}/memories/{memory_id}")),
         "tenant-b",
     )
     .await;
     response.assert_status(StatusCode::NOT_FOUND);
 
     let response = tenant_header(
-        server.get(&format!("/v1/stores/{store_id}/memories")),
+        server.get(&format!("/v1/stores/{store_name}/memories")),
         "tenant-b",
     )
     .await;
-    response.assert_status_ok();
-    let memories: Value = response.json();
-    assert_eq!(memories["total"], 0);
-    assert!(memories["items"].as_array().unwrap().is_empty());
+    // Store "memory-store" belongs to tenant-a, so tenant-b can't see it at all
+    response.assert_status(StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -479,10 +475,10 @@ async fn test_batch_create_memories() {
         .await;
     response.assert_status(StatusCode::CREATED);
     let store: Value = response.json();
-    let store_id = store["id"].as_str().unwrap();
+    let store_name = store["name"].as_str().unwrap();
 
     let response = tenant_header(
-        server.post(&format!("/v1/stores/{store_id}/memories/batch")),
+        server.post(&format!("/v1/stores/{store_name}/memories/batch")),
         tenant,
     )
     .json(&json!({
@@ -524,10 +520,10 @@ async fn test_batch_delete_memories() {
         .await;
     response.assert_status(StatusCode::CREATED);
     let store: Value = response.json();
-    let store_id = store["id"].as_str().unwrap();
+    let store_name = store["name"].as_str().unwrap();
 
     let response = tenant_header(
-        server.post(&format!("/v1/stores/{store_id}/memories")),
+        server.post(&format!("/v1/stores/{store_name}/memories")),
         tenant,
     )
     .json(&json!({
@@ -542,7 +538,7 @@ async fn test_batch_delete_memories() {
     let memory_id_1 = memory_1["id"].as_str().unwrap();
 
     let response = tenant_header(
-        server.post(&format!("/v1/stores/{store_id}/memories")),
+        server.post(&format!("/v1/stores/{store_name}/memories")),
         tenant,
     )
     .json(&json!({
@@ -557,7 +553,7 @@ async fn test_batch_delete_memories() {
     let memory_id_2 = memory_2["id"].as_str().unwrap();
 
     let response = tenant_header(
-        server.post(&format!("/v1/stores/{store_id}/memories/batch/delete")),
+        server.post(&format!("/v1/stores/{store_name}/memories/batch/delete")),
         tenant,
     )
     .json(&json!({
@@ -570,14 +566,14 @@ async fn test_batch_delete_memories() {
     assert!(body["errors"].as_array().unwrap().is_empty());
 
     let response = tenant_header(
-        server.get(&format!("/v1/stores/{store_id}/memories/{memory_id_1}")),
+        server.get(&format!("/v1/stores/{store_name}/memories/{memory_id_1}")),
         tenant,
     )
     .await;
     response.assert_status(StatusCode::NOT_FOUND);
 
     let response = tenant_header(
-        server.get(&format!("/v1/stores/{store_id}/memories/{memory_id_2}")),
+        server.get(&format!("/v1/stores/{store_name}/memories/{memory_id_2}")),
         tenant,
     )
     .await;
@@ -594,10 +590,10 @@ async fn test_audit_log() {
         .await;
     response.assert_status(StatusCode::CREATED);
     let store: Value = response.json();
-    let store_id = store["id"].as_str().unwrap();
+    let store_name = store["name"].as_str().unwrap();
 
     let response = tenant_header(
-        server.post(&format!("/v1/stores/{store_id}/memories")),
+        server.post(&format!("/v1/stores/{store_name}/memories")),
         tenant,
     )
     .json(&json!({
@@ -612,7 +608,7 @@ async fn test_audit_log() {
     let memory_id = memory["id"].as_str().unwrap();
 
     let response = tenant_header(
-        server.patch(&format!("/v1/stores/{store_id}/memories/{memory_id}")),
+        server.patch(&format!("/v1/stores/{store_name}/memories/{memory_id}")),
         tenant,
     )
     .json(&json!({
@@ -621,7 +617,11 @@ async fn test_audit_log() {
     .await;
     response.assert_status_ok();
 
-    let response = tenant_header(server.get(&format!("/v1/stores/{store_id}/audit")), tenant).await;
+    let response = tenant_header(
+        server.get(&format!("/v1/stores/{store_name}/audit")),
+        tenant,
+    )
+    .await;
     response.assert_status_ok();
     let audit: Value = response.json();
     let items = audit["items"].as_array().unwrap();
@@ -640,10 +640,10 @@ async fn test_memory_audit_log() {
         .await;
     response.assert_status(StatusCode::CREATED);
     let store: Value = response.json();
-    let store_id = store["id"].as_str().unwrap();
+    let store_name = store["name"].as_str().unwrap();
 
     let response = tenant_header(
-        server.post(&format!("/v1/stores/{store_id}/memories")),
+        server.post(&format!("/v1/stores/{store_name}/memories")),
         tenant,
     )
     .json(&json!({
@@ -658,7 +658,9 @@ async fn test_memory_audit_log() {
     let memory_id = memory["id"].as_str().unwrap();
 
     let response = tenant_header(
-        server.get(&format!("/v1/stores/{store_id}/memories/{memory_id}/audit")),
+        server.get(&format!(
+            "/v1/stores/{store_name}/memories/{memory_id}/audit"
+        )),
         tenant,
     )
     .await;
@@ -679,10 +681,10 @@ async fn test_purge_expired() {
         .await;
     response.assert_status(StatusCode::CREATED);
     let store: Value = response.json();
-    let store_id = store["id"].as_str().unwrap();
+    let store_name = store["name"].as_str().unwrap();
 
     let response = tenant_header(
-        server.post(&format!("/v1/stores/{store_id}/memories")),
+        server.post(&format!("/v1/stores/{store_name}/memories")),
         tenant,
     )
     .json(&json!({
@@ -698,7 +700,7 @@ async fn test_purge_expired() {
     let memory_id = memory["id"].as_str().unwrap();
 
     let response = tenant_header(
-        server.delete(&format!("/v1/stores/{store_id}/expired")),
+        server.delete(&format!("/v1/stores/{store_name}/expired")),
         tenant,
     )
     .await;
@@ -707,7 +709,7 @@ async fn test_purge_expired() {
     assert_eq!(body["deleted"], 1);
 
     let response = tenant_header(
-        server.get(&format!("/v1/stores/{store_id}/memories/{memory_id}")),
+        server.get(&format!("/v1/stores/{store_name}/memories/{memory_id}")),
         tenant,
     )
     .await;
@@ -715,11 +717,11 @@ async fn test_purge_expired() {
 }
 
 #[tokio::test]
-async fn test_invalid_uuid_returns_400() {
+async fn test_nonexistent_store_returns_404() {
     let server = test_app().await;
-    let response = tenant_header(server.get("/v1/stores/not-a-uuid"), "uuid-tenant").await;
+    let response = tenant_header(server.get("/v1/stores/no-such-store"), "some-tenant").await;
 
-    response.assert_status(StatusCode::BAD_REQUEST);
+    response.assert_status(StatusCode::NOT_FOUND);
     let body: Value = response.json();
     assert!(body["error"].is_string(), "expected JSON error response");
 }
@@ -734,10 +736,10 @@ async fn test_gdpr_purge_deletes_and_anonymizes_audit() {
         .await;
     response.assert_status(StatusCode::CREATED);
     let store: Value = response.json();
-    let store_id = store["id"].as_str().unwrap();
+    let store_name = store["name"].as_str().unwrap();
 
     let response = tenant_header(
-        server.post(&format!("/v1/stores/{store_id}/memories")),
+        server.post(&format!("/v1/stores/{store_name}/memories")),
         tenant,
     )
     .json(&json!({
@@ -755,7 +757,7 @@ async fn test_gdpr_purge_deletes_and_anonymizes_audit() {
     let memory_id = memory["id"].as_str().unwrap();
 
     let response = tenant_header(
-        server.post(&format!("/v1/stores/{store_id}/gdpr/purge")),
+        server.post(&format!("/v1/stores/{store_name}/gdpr/purge")),
         tenant,
     )
     .json(&json!({ "user_id": "user123" }))
@@ -765,13 +767,17 @@ async fn test_gdpr_purge_deletes_and_anonymizes_audit() {
     assert_eq!(body["deleted"], 1);
 
     let response = tenant_header(
-        server.get(&format!("/v1/stores/{store_id}/memories/{memory_id}")),
+        server.get(&format!("/v1/stores/{store_name}/memories/{memory_id}")),
         tenant,
     )
     .await;
     response.assert_status(StatusCode::NOT_FOUND);
 
-    let response = tenant_header(server.get(&format!("/v1/stores/{store_id}/audit")), tenant).await;
+    let response = tenant_header(
+        server.get(&format!("/v1/stores/{store_name}/audit")),
+        tenant,
+    )
+    .await;
     response.assert_status_ok();
     let audit: Value = response.json();
     let items: Vec<&Value> = audit["items"]
@@ -797,10 +803,10 @@ async fn test_update_memory_clears_expires_at() {
         .await;
     response.assert_status(StatusCode::CREATED);
     let store: Value = response.json();
-    let store_id = store["id"].as_str().unwrap();
+    let store_name = store["name"].as_str().unwrap();
 
     let response = tenant_header(
-        server.post(&format!("/v1/stores/{store_id}/memories")),
+        server.post(&format!("/v1/stores/{store_name}/memories")),
         tenant,
     )
     .json(&json!({
@@ -817,7 +823,7 @@ async fn test_update_memory_clears_expires_at() {
     assert_eq!(memory["expires_at"], "2030-01-01T00:00:00Z");
 
     let response = tenant_header(
-        server.patch(&format!("/v1/stores/{store_id}/memories/{memory_id}")),
+        server.patch(&format!("/v1/stores/{store_name}/memories/{memory_id}")),
         tenant,
     )
     .json(&json!({
@@ -829,7 +835,7 @@ async fn test_update_memory_clears_expires_at() {
     assert!(updated["expires_at"].is_null());
 
     let response = tenant_header(
-        server.get(&format!("/v1/stores/{store_id}/memories/{memory_id}")),
+        server.get(&format!("/v1/stores/{store_name}/memories/{memory_id}")),
         tenant,
     )
     .await;
@@ -948,14 +954,14 @@ async fn test_upsert_creates_new_entry() {
     let store_resp = tenant_header(server.post("/v1/stores"), tenant)
         .json(&json!({ "name": "upsert-store" }))
         .await;
-    let store_id = store_resp.json::<Value>()["id"]
+    let store_name = store_resp.json::<Value>()["name"]
         .as_str()
         .unwrap()
         .to_string();
 
     // Create memory with upsert_key
     let response = tenant_header(
-        server.post(&format!("/v1/stores/{store_id}/memories")),
+        server.post(&format!("/v1/stores/{store_name}/memories")),
         tenant,
     )
     .json(&json!({
@@ -981,14 +987,14 @@ async fn test_upsert_replaces_existing_entry() {
     let store_resp = tenant_header(server.post("/v1/stores"), tenant)
         .json(&json!({ "name": "upsert-store" }))
         .await;
-    let store_id = store_resp.json::<Value>()["id"]
+    let store_name = store_resp.json::<Value>()["name"]
         .as_str()
         .unwrap()
         .to_string();
 
     // First upsert
     let first = tenant_header(
-        server.post(&format!("/v1/stores/{store_id}/memories")),
+        server.post(&format!("/v1/stores/{store_name}/memories")),
         tenant,
     )
     .json(&json!({
@@ -1003,7 +1009,7 @@ async fn test_upsert_replaces_existing_entry() {
 
     // Second upsert with same key -- should replace
     let second = tenant_header(
-        server.post(&format!("/v1/stores/{store_id}/memories")),
+        server.post(&format!("/v1/stores/{store_name}/memories")),
         tenant,
     )
     .json(&json!({
@@ -1030,13 +1036,13 @@ async fn test_upsert_different_keys_create_separate_entries() {
     let store_resp = tenant_header(server.post("/v1/stores"), tenant)
         .json(&json!({ "name": "upsert-store" }))
         .await;
-    let store_id = store_resp.json::<Value>()["id"]
+    let store_name = store_resp.json::<Value>()["name"]
         .as_str()
         .unwrap()
         .to_string();
 
     let first = tenant_header(
-        server.post(&format!("/v1/stores/{store_id}/memories")),
+        server.post(&format!("/v1/stores/{store_name}/memories")),
         tenant,
     )
     .json(&json!({
@@ -1048,7 +1054,7 @@ async fn test_upsert_different_keys_create_separate_entries() {
     .await;
 
     let second = tenant_header(
-        server.post(&format!("/v1/stores/{store_id}/memories")),
+        server.post(&format!("/v1/stores/{store_name}/memories")),
         tenant,
     )
     .json(&json!({
@@ -1073,14 +1079,14 @@ async fn test_plain_string_content_round_trips() {
     let store_resp = tenant_header(server.post("/v1/stores"), tenant)
         .json(&json!({ "name": "content-test" }))
         .await;
-    let store_id = store_resp.json::<Value>()["id"]
+    let store_name = store_resp.json::<Value>()["name"]
         .as_str()
         .unwrap()
         .to_string();
 
     // Create with plain string content
     let created = tenant_header(
-        server.post(&format!("/v1/stores/{store_id}/memories")),
+        server.post(&format!("/v1/stores/{store_name}/memories")),
         tenant,
     )
     .json(&json!({
@@ -1094,7 +1100,7 @@ async fn test_plain_string_content_round_trips() {
 
     // Read it back
     let fetched = tenant_header(
-        server.get(&format!("/v1/stores/{store_id}/memories/{memory_id}")),
+        server.get(&format!("/v1/stores/{store_name}/memories/{memory_id}")),
         tenant,
     )
     .await;
@@ -1112,14 +1118,14 @@ async fn test_structured_content_round_trips() {
     let store_resp = tenant_header(server.post("/v1/stores"), tenant)
         .json(&json!({ "name": "content-test" }))
         .await;
-    let store_id = store_resp.json::<Value>()["id"]
+    let store_name = store_resp.json::<Value>()["name"]
         .as_str()
         .unwrap()
         .to_string();
 
     let structured = json!({"key": "value", "nested": {"a": 1}});
     let created = tenant_header(
-        server.post(&format!("/v1/stores/{store_id}/memories")),
+        server.post(&format!("/v1/stores/{store_name}/memories")),
         tenant,
     )
     .json(&json!({
@@ -1132,7 +1138,7 @@ async fn test_structured_content_round_trips() {
     let memory_id = created.json::<Value>()["id"].as_str().unwrap().to_string();
 
     let fetched = tenant_header(
-        server.get(&format!("/v1/stores/{store_id}/memories/{memory_id}")),
+        server.get(&format!("/v1/stores/{store_name}/memories/{memory_id}")),
         tenant,
     )
     .await;
@@ -1218,11 +1224,14 @@ async fn test_auto_embed_on_write() {
             "region": "local"
         }))
         .await;
-    let store_id = response.json::<Value>()["id"].as_str().unwrap().to_string();
+    let store_name = response.json::<Value>()["name"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Create memory WITHOUT providing embedding
     let response = server
-        .post(&format!("/v1/stores/{store_id}/memories"))
+        .post(&format!("/v1/stores/{store_name}/memories"))
         .add_header(
             HeaderName::from_static("x-tenant-id"),
             HeaderValue::from_static("embed-test"),
@@ -1261,7 +1270,10 @@ async fn test_auto_embed_on_search() {
             "region": "local"
         }))
         .await;
-    let store_id = response.json::<Value>()["id"].as_str().unwrap().to_string();
+    let store_name = response.json::<Value>()["name"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Create a few memories
     for content in [
@@ -1270,7 +1282,7 @@ async fn test_auto_embed_on_search() {
         "Authentication will use OAuth 2.0 with JWT tokens",
     ] {
         server
-            .post(&format!("/v1/stores/{store_id}/memories"))
+            .post(&format!("/v1/stores/{store_name}/memories"))
             .add_header(
                 HeaderName::from_static("x-tenant-id"),
                 HeaderValue::from_static("embed-search"),
@@ -1285,7 +1297,7 @@ async fn test_auto_embed_on_search() {
 
     // Search WITHOUT providing embedding — should auto-embed the query
     let response = server
-        .post(&format!("/v1/stores/{store_id}/search"))
+        .post(&format!("/v1/stores/{store_name}/search"))
         .add_header(
             HeaderName::from_static("x-tenant-id"),
             HeaderValue::from_static("embed-search"),
@@ -1319,13 +1331,16 @@ async fn test_auto_embed_preserves_caller_embedding() {
             "region": "local"
         }))
         .await;
-    let store_id = response.json::<Value>()["id"].as_str().unwrap().to_string();
+    let store_name = response.json::<Value>()["name"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Provide a custom 3-dim embedding (matches FakeEmbedder dimensions)
     let custom_embedding: Vec<f32> = vec![42.0, 21.0, 1.0];
 
     let response = server
-        .post(&format!("/v1/stores/{store_id}/memories"))
+        .post(&format!("/v1/stores/{store_name}/memories"))
         .add_header(
             HeaderName::from_static("x-tenant-id"),
             HeaderValue::from_static("embed-preserve"),
@@ -1369,13 +1384,16 @@ async fn test_auto_embed_rejects_wrong_dimensions() {
             "region": "local"
         }))
         .await;
-    let store_id = response.json::<Value>()["id"].as_str().unwrap().to_string();
+    let store_name = response.json::<Value>()["name"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Send a 100-dim embedding when model expects 3
     let wrong_embedding: Vec<f32> = vec![0.1; 100];
 
     let response = server
-        .post(&format!("/v1/stores/{store_id}/memories"))
+        .post(&format!("/v1/stores/{store_name}/memories"))
         .add_header(
             HeaderName::from_static("x-tenant-id"),
             HeaderValue::from_static("embed-dim"),
@@ -1407,11 +1425,14 @@ async fn test_auto_embed_on_update() {
             "region": "local"
         }))
         .await;
-    let store_id = response.json::<Value>()["id"].as_str().unwrap().to_string();
+    let store_name = response.json::<Value>()["name"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Create memory
     let response = server
-        .post(&format!("/v1/stores/{store_id}/memories"))
+        .post(&format!("/v1/stores/{store_name}/memories"))
         .add_header(
             HeaderName::from_static("x-tenant-id"),
             HeaderValue::from_static("embed-update"),
@@ -1432,7 +1453,7 @@ async fn test_auto_embed_on_update() {
 
     // Update content — embedding should be recomputed
     let response = server
-        .patch(&format!("/v1/stores/{store_id}/memories/{memory_id}"))
+        .patch(&format!("/v1/stores/{store_name}/memories/{memory_id}"))
         .add_header(
             HeaderName::from_static("x-tenant-id"),
             HeaderValue::from_static("embed-update"),
@@ -1497,7 +1518,10 @@ async fn test_vector_search_returns_ranked_results() {
         )
         .json(&json!({"name": "vsearch-store", "region": "local"}))
         .await;
-    let store_id = response.json::<Value>()["id"].as_str().unwrap().to_string();
+    let store_name = response.json::<Value>()["name"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Add semantically diverse documents
     for text in [
@@ -1507,7 +1531,7 @@ async fn test_vector_search_returns_ranked_results() {
         "Rust is a systems programming language",
     ] {
         server
-            .post(&format!("/v1/stores/{store_id}/memories"))
+            .post(&format!("/v1/stores/{store_name}/memories"))
             .add_header(
                 HeaderName::from_static("x-tenant-id"),
                 HeaderValue::from_static("vsearch-test"),
@@ -1522,7 +1546,7 @@ async fn test_vector_search_returns_ranked_results() {
 
     // Vector search (no keyword=true, so pure vector similarity)
     let response = server
-        .post(&format!("/v1/stores/{store_id}/search"))
+        .post(&format!("/v1/stores/{store_name}/search"))
         .add_header(
             HeaderName::from_static("x-tenant-id"),
             HeaderValue::from_static("vsearch-test"),
@@ -1551,11 +1575,14 @@ async fn test_structured_content_with_arrays_embeds_correctly() {
         )
         .json(&json!({"name": "array-store", "region": "local"}))
         .await;
-    let store_id = response.json::<Value>()["id"].as_str().unwrap().to_string();
+    let store_name = response.json::<Value>()["name"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Create memory with array content containing string values
     let response = server
-        .post(&format!("/v1/stores/{store_id}/memories"))
+        .post(&format!("/v1/stores/{store_name}/memories"))
         .add_header(
             HeaderName::from_static("x-tenant-id"),
             HeaderValue::from_static("array-test"),
@@ -1591,11 +1618,14 @@ async fn test_update_memory_explicit_clear_embedding() {
         )
         .json(&json!({"name": "clear-store", "region": "local"}))
         .await;
-    let store_id = response.json::<Value>()["id"].as_str().unwrap().to_string();
+    let store_name = response.json::<Value>()["name"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Create memory (auto-embedded)
     let response = server
-        .post(&format!("/v1/stores/{store_id}/memories"))
+        .post(&format!("/v1/stores/{store_name}/memories"))
         .add_header(
             HeaderName::from_static("x-tenant-id"),
             HeaderValue::from_static("clear-test"),
@@ -1613,7 +1643,7 @@ async fn test_update_memory_explicit_clear_embedding() {
 
     // Update with content change but no explicit embedding — should auto-recompute
     let response = server
-        .patch(&format!("/v1/stores/{store_id}/memories/{memory_id}"))
+        .patch(&format!("/v1/stores/{store_name}/memories/{memory_id}"))
         .add_header(
             HeaderName::from_static("x-tenant-id"),
             HeaderValue::from_static("clear-test"),
@@ -1641,10 +1671,10 @@ async fn test_inheritance_create_and_delete() {
         .await;
     response.assert_status(StatusCode::CREATED);
     let store: Value = response.json();
-    let store_id = store["id"].as_str().unwrap();
+    let store_name = store["name"].as_str().unwrap();
 
     let response = server
-        .post(&format!("/v1/stores/{store_id}/inherit"))
+        .post(&format!("/v1/stores/{store_name}/inherit"))
         .json(&json!({
             "parent_agent_id": "parent-agent",
             "child_agent_id": "child-agent",
@@ -1658,7 +1688,7 @@ async fn test_inheritance_create_and_delete() {
     let inheritance: Value = response.json();
     let inheritance_id = inheritance["id"].as_str().unwrap();
 
-    assert_eq!(inheritance["store_id"], store_id);
+    assert!(inheritance["store_id"].is_string());
     assert_eq!(inheritance["tenant_id"], "_default");
     assert_eq!(inheritance["parent_agent_id"], "parent-agent");
     assert_eq!(inheritance["child_agent_id"], "child-agent");
@@ -1671,7 +1701,7 @@ async fn test_inheritance_create_and_delete() {
     assert_eq!(inheritance["access"], "read_only");
 
     let response = server
-        .delete(&format!("/v1/stores/{store_id}/inherit/{inheritance_id}"))
+        .delete(&format!("/v1/stores/{store_name}/inherit/{inheritance_id}"))
         .await;
     response.assert_status(StatusCode::NO_CONTENT);
 }
@@ -1686,10 +1716,10 @@ async fn test_bubble_up_creates_parent_memories() {
         .await;
     response.assert_status(StatusCode::CREATED);
     let store: Value = response.json();
-    let store_id = store["id"].as_str().unwrap();
+    let store_name = store["name"].as_str().unwrap();
 
     let response = server
-        .post(&format!("/v1/stores/{store_id}/inherit"))
+        .post(&format!("/v1/stores/{store_name}/inherit"))
         .json(&json!({
             "parent_agent_id": "parent-agent",
             "child_agent_id": "child-agent",
@@ -1703,7 +1733,7 @@ async fn test_bubble_up_creates_parent_memories() {
 
     for content in ["child memory one", "child memory two"] {
         let response = server
-            .post(&format!("/v1/stores/{store_id}/memories"))
+            .post(&format!("/v1/stores/{store_name}/memories"))
             .json(&json!({
                 "layer": "working",
                 "content": { "text": content },
@@ -1715,7 +1745,7 @@ async fn test_bubble_up_creates_parent_memories() {
     }
 
     let response = server
-        .post(&format!("/v1/stores/{store_id}/bubble-up"))
+        .post(&format!("/v1/stores/{store_name}/bubble-up"))
         .json(&json!({
             "parent_agent_id": "parent-agent",
             "child_agent_id": "child-agent",
@@ -1739,7 +1769,7 @@ async fn test_bubble_up_creates_parent_memories() {
 
     let response = server
         .get(&format!(
-            "/v1/stores/{store_id}/memories?owner_agent_id=parent-agent"
+            "/v1/stores/{store_name}/memories?owner_agent_id=parent-agent"
         ))
         .await;
     response.assert_status_ok();
@@ -1763,10 +1793,10 @@ async fn test_shared_space_lifecycle() {
         .await;
     response.assert_status(StatusCode::CREATED);
     let store: Value = response.json();
-    let store_id = store["id"].as_str().unwrap();
+    let store_name = store["name"].as_str().unwrap();
 
     let response = server
-        .post(&format!("/v1/stores/{store_id}/shared-spaces"))
+        .post(&format!("/v1/stores/{store_name}/shared-spaces"))
         .json(&json!({
             "name": "test-space",
             "description": "A test shared space",
@@ -1787,7 +1817,7 @@ async fn test_shared_space_lifecycle() {
     assert!(space["participants"].as_array().unwrap().is_empty());
 
     let response = server
-        .get(&format!("/v1/stores/{store_id}/shared-spaces"))
+        .get(&format!("/v1/stores/{store_name}/shared-spaces"))
         .await;
     response.assert_status_ok();
     let spaces: Value = response.json();
@@ -1796,7 +1826,7 @@ async fn test_shared_space_lifecycle() {
     assert_eq!(listed_spaces[0]["id"], space_id);
 
     let response = server
-        .get(&format!("/v1/stores/{store_id}/shared-spaces/{space_id}"))
+        .get(&format!("/v1/stores/{store_name}/shared-spaces/{space_id}"))
         .await;
     response.assert_status_ok();
     let fetched: Value = response.json();
@@ -1806,7 +1836,7 @@ async fn test_shared_space_lifecycle() {
 
     let response = server
         .post(&format!(
-            "/v1/stores/{store_id}/shared-spaces/{space_id}/join"
+            "/v1/stores/{store_name}/shared-spaces/{space_id}/join"
         ))
         .json(&json!({
             "agent_id": "agent-2",
@@ -1822,7 +1852,7 @@ async fn test_shared_space_lifecycle() {
 
     let response = server
         .post(&format!(
-            "/v1/stores/{store_id}/shared-spaces/{space_id}/leave"
+            "/v1/stores/{store_name}/shared-spaces/{space_id}/leave"
         ))
         .json(&json!({
             "agent_id": "agent-2"
@@ -1831,12 +1861,12 @@ async fn test_shared_space_lifecycle() {
     response.assert_status(StatusCode::NO_CONTENT);
 
     let response = server
-        .delete(&format!("/v1/stores/{store_id}/shared-spaces/{space_id}"))
+        .delete(&format!("/v1/stores/{store_name}/shared-spaces/{space_id}"))
         .await;
     response.assert_status(StatusCode::NO_CONTENT);
 
     let response = server
-        .get(&format!("/v1/stores/{store_id}/shared-spaces"))
+        .get(&format!("/v1/stores/{store_name}/shared-spaces"))
         .await;
     response.assert_status_ok();
     let spaces: Value = response.json();
@@ -1853,11 +1883,11 @@ async fn test_inheritance_not_found_returns_error() {
         .await;
     response.assert_status(StatusCode::CREATED);
     let store: Value = response.json();
-    let store_id = store["id"].as_str().unwrap();
+    let store_name = store["name"].as_str().unwrap();
 
     let response = server
         .delete(&format!(
-            "/v1/stores/{store_id}/inherit/00000000-0000-0000-0000-000000000001"
+            "/v1/stores/{store_name}/inherit/00000000-0000-0000-0000-000000000001"
         ))
         .await;
     response.assert_status(StatusCode::BAD_REQUEST);
@@ -1878,11 +1908,11 @@ async fn test_shared_space_not_found_returns_error() {
         .await;
     response.assert_status(StatusCode::CREATED);
     let store: Value = response.json();
-    let store_id = store["id"].as_str().unwrap();
+    let store_name = store["name"].as_str().unwrap();
 
     let response = server
         .get(&format!(
-            "/v1/stores/{store_id}/shared-spaces/00000000-0000-0000-0000-000000000001"
+            "/v1/stores/{store_name}/shared-spaces/00000000-0000-0000-0000-000000000001"
         ))
         .await;
     response.assert_status(StatusCode::BAD_REQUEST);

@@ -28,6 +28,20 @@ pub trait OmsProvider: Send + Sync {
 
     async fn get_store(&self, tenant_id: &str, store_id: Uuid) -> Result<MemoryStore, OmsError>;
 
+    /// Retrieve a store by its name within a tenant.
+    /// Names are unique per tenant and immutable after creation.
+    async fn get_store_by_name(
+        &self,
+        tenant_id: &str,
+        name: &str,
+    ) -> Result<MemoryStore, OmsError> {
+        let stores = self.list_stores(tenant_id).await?;
+        stores
+            .into_iter()
+            .find(|s| s.name == name)
+            .ok_or_else(|| OmsError::NotFound(format!("store not found: {name}")))
+    }
+
     async fn list_stores(&self, tenant_id: &str) -> Result<Vec<MemoryStore>, OmsError>;
 
     async fn update_store(
