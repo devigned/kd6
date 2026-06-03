@@ -39,6 +39,22 @@ pub trait OmsProvider: Send + Sync {
 
     async fn delete_store(&self, tenant_id: &str, store_id: Uuid) -> Result<(), OmsError>;
 
+    /// Atomically get an existing store by name, or create it if it doesn't exist.
+    /// Used for `_default` store auto-provisioning (OMS spec 4.1.1).
+    async fn get_or_create_store(
+        &self,
+        tenant_id: &str,
+        name: &str,
+        request: CreateStoreRequest,
+    ) -> Result<MemoryStore, OmsError> {
+        // Default implementation: list + create (non-atomic, override for atomicity)
+        let stores = self.list_stores(tenant_id).await?;
+        if let Some(store) = stores.into_iter().find(|s| s.name == name) {
+            return Ok(store);
+        }
+        self.create_store(tenant_id, request).await
+    }
+
     // --- Memory CRUD ---
 
     async fn create_memory(

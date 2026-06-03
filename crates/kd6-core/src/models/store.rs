@@ -121,6 +121,10 @@ pub struct CreateMemoryRequest {
     // --- Graph metadata (Level 3) ---
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entity_type: Option<String>,
+    // --- Upsert support (see OMS spec 4.3.2) ---
+    /// When set, enables atomic create-or-replace within the same store, layer, and scope.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upsert_key: Option<String>,
 }
 
 fn default_layer() -> MemoryLayer {

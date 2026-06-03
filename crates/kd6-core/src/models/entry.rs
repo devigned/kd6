@@ -40,6 +40,9 @@ pub struct MemoryEntry {
     // --- Graph metadata (Level 3) ---
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entity_type: Option<String>,
+    // --- Upsert support (see OMS spec 4.3.2) ---
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upsert_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
