@@ -239,7 +239,7 @@ fn ok_json<T: Serialize>(data: T) -> String {
 }
 
 fn err_json(msg: String) -> String {
-    serde_json::to_string(&ToolError {
+    serde_json::to_string_pretty(&ToolError {
         success: false,
         error: msg,
     })

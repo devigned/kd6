@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-#[derive(Debug, Clone, Error)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum OmsError {
     #[error("store not found: {0}")]
     StoreNotFound(String),

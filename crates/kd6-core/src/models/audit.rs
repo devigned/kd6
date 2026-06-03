@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// A single audit log entry recording a write operation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AuditEntry {
     pub id: Uuid,
     pub store_id: Uuid,
@@ -25,7 +25,7 @@ pub struct AuditEntry {
 }
 
 /// Filter for querying audit logs.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuditFilter {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory_id: Option<Uuid>,

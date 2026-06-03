@@ -4,7 +4,7 @@ use super::entry::MemoryLayer;
 use super::scope::MemoryScope;
 
 /// Search query for vector similarity search with metadata filtering.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SearchQuery {
     /// Natural language query or structured query string.
     pub query: String,
@@ -40,7 +40,7 @@ fn default_threshold() -> f32 {
     0.0
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetadataFilters {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
@@ -51,7 +51,7 @@ pub struct MetadataFilters {
 }
 
 /// A single search result with similarity score.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SearchResult {
     pub entry: super::entry::MemoryEntry,
     pub score: f32,

@@ -5,7 +5,7 @@ use uuid::Uuid;
 use super::scope::MemoryScope;
 
 /// A single unit of stored memory within a store.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MemoryEntry {
     pub id: Uuid,
     pub store_id: Uuid,
@@ -67,7 +67,7 @@ impl std::fmt::Display for MemoryLayer {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccessControl {
     pub policy: AccessPolicy,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -86,7 +86,7 @@ pub enum AccessPolicy {
     PublicRead,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceReference {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conversation_id: Option<String>,

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 /// **Important:** Providers must always override `scope.tenant_id` with the
 /// authenticated `tenant_id` from the request context before storage.
 /// Use [`MemoryScope::normalize`] to enforce this.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryScope {
     #[serde(default)]
     pub tenant_id: String,

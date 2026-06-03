@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// An edge in the memory knowledge graph.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GraphEdge {
     pub id: Uuid,
     pub store_id: Uuid,
@@ -23,7 +23,7 @@ fn default_weight() -> f64 {
 }
 
 /// Request to create a graph edge.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CreateEdgeRequest {
     pub source_memory_id: Uuid,
     pub target_memory_id: Uuid,
@@ -35,7 +35,7 @@ pub struct CreateEdgeRequest {
 }
 
 /// Request for graph traversal.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GraphTraversalRequest {
     pub start_memory_id: Uuid,
     #[serde(default = "default_depth")]
@@ -49,7 +49,7 @@ fn default_depth() -> u32 {
 }
 
 /// Result of a graph traversal.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GraphTraversalResult {
     pub nodes: Vec<super::entry::MemoryEntry>,
     pub edges: Vec<GraphEdge>,

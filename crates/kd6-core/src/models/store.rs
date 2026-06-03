@@ -6,7 +6,7 @@ use super::entry::{AccessControl, MemoryEntry, MemoryLayer, SourceReference};
 use super::scope::MemoryScope;
 
 /// A named, configured container for memories.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryStore {
     pub id: Uuid,
     pub name: String,
@@ -23,7 +23,7 @@ pub struct MemoryStore {
 }
 
 /// Configuration for a memory store.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoreConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_ttl_seconds: Option<i64>,
@@ -34,7 +34,7 @@ pub struct StoreConfig {
 }
 
 /// Capabilities declared by a backend provider.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderCapabilities {
     pub supported_layers: Vec<MemoryLayer>,
     pub vector_search: bool,
@@ -57,7 +57,7 @@ pub struct ProviderCapabilities {
 }
 
 /// Usage statistics for a store.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoreStats {
     pub store_id: Uuid,
     pub tenant_id: String,
@@ -67,7 +67,7 @@ pub struct StoreStats {
 }
 
 /// Input for creating a new store.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateStoreRequest {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -79,7 +79,7 @@ pub struct CreateStoreRequest {
 }
 
 /// Input for updating a store.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateStoreRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -90,7 +90,7 @@ pub struct UpdateStoreRequest {
 }
 
 /// Input for creating a memory entry.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CreateMemoryRequest {
     #[serde(default = "default_layer")]
     pub layer: MemoryLayer,
@@ -134,7 +134,7 @@ fn default_layer() -> MemoryLayer {
 /// Input for updating a memory entry.
 /// Uses `Option<Option<T>>` for nullable fields so callers can distinguish
 /// "don't change" (`None`) from "clear this field" (`Some(None)`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UpdateMemoryRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<serde_json::Value>,
@@ -168,7 +168,7 @@ where
 }
 
 /// Filter parameters for listing memories.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListMemoriesFilter {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub layer: Option<MemoryLayer>,
@@ -185,32 +185,32 @@ pub struct ListMemoriesFilter {
 }
 
 /// Batch create request.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BatchCreateRequest {
     pub entries: Vec<CreateMemoryRequest>,
 }
 
 /// Batch create response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BatchCreateResponse {
     pub created: Vec<MemoryEntry>,
     pub errors: Vec<BatchError>,
 }
 
 /// Batch delete request.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BatchDeleteRequest {
     pub memory_ids: Vec<Uuid>,
 }
 
 /// Batch delete response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BatchDeleteResponse {
     pub deleted: u64,
     pub errors: Vec<BatchError>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BatchError {
     pub index: usize,
     pub error: String,

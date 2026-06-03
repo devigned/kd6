@@ -75,34 +75,6 @@ impl<'de> serde::Deserialize<'de> for StoreRef {
     }
 }
 
-/// Extracts agent identity from `X-Agent-ID` header (optional for now).
-#[allow(dead_code)]
-pub struct AgentId(pub String);
-
-#[allow(dead_code)]
-pub struct AgentIdRejection(&'static str);
-
-impl IntoResponse for AgentIdRejection {
-    fn into_response(self) -> Response {
-        (StatusCode::BAD_REQUEST, Json(json!({ "error": self.0 }))).into_response()
-    }
-}
-
-impl<S: Send + Sync> FromRequestParts<S> for AgentId {
-    type Rejection = AgentIdRejection;
-
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        parts
-            .headers
-            .get("X-Agent-ID")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .map(|s| AgentId(s.to_string()))
-            .ok_or(AgentIdRejection("X-Agent-ID header is required"))
-    }
-}
-
 /// JSON body extractor that returns `{"error": "..."}` on parse failure
 /// instead of axum's default plain-text rejection.
 pub struct JsonBody<T>(pub T);

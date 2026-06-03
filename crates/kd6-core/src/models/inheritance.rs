@@ -5,7 +5,7 @@ use uuid::Uuid;
 use super::entry::MemoryLayer;
 
 /// Defines a parent-child memory inheritance relationship.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InheritanceSpec {
     pub id: Uuid,
     pub store_id: Uuid,
@@ -26,7 +26,7 @@ fn default_access() -> InheritanceAccess {
     InheritanceAccess::ReadOnly
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InheritanceFilter {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
@@ -47,7 +47,7 @@ pub enum InheritanceAccess {
     ReadWrite,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BubbleUpConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -58,7 +58,7 @@ pub struct BubbleUpConfig {
 }
 
 /// Request to create an inheritance relationship.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateInheritanceRequest {
     pub parent_agent_id: String,
     pub child_agent_id: String,
@@ -72,7 +72,7 @@ pub struct CreateInheritanceRequest {
 }
 
 /// Request to bubble up child results to parent.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BubbleUpRequest {
     pub child_agent_id: String,
     pub parent_agent_id: String,

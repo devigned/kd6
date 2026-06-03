@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Data sovereignty configuration for a memory store.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SovereigntyConfig {
     #[serde(default = "default_mode")]
     pub mode: SovereigntyMode,
@@ -33,7 +33,7 @@ pub enum SovereigntyMode {
     Any,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReplicationConfig {
     #[serde(default)]
     pub enabled: bool,
