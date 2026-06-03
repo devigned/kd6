@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/kd6-core",
+    "crates/kd6-embed",
     "crates/kd6-sqlite",
     "crates/kd6-server",
     "crates/kd6-mcp",
@@ -33,6 +34,8 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 jsonwebtoken = "9"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+reqwest = { version = "0.12", features = ["json"], default-features = false }
 
 # MCP server
 rmcp = { version = "1", features = ["server", "transport-io", "transport-streamable-http-server", "macros", "schemars"] }
