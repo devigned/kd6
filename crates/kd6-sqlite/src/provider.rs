@@ -134,6 +134,26 @@ fn sanitize_fts5_query(input: &str) -> String {
         .join(" ")
 }
 
+/// Map a sqlx::Error to an appropriate OmsError.
+/// Detects unique constraint violations and maps them to ConstraintViolation;
+/// all other database errors become Internal.
+fn map_db_error(context: &str, err: sqlx::Error) -> OmsError {
+    if let sqlx::Error::Database(ref db_err) = err {
+        if let Some(code) = db_err.code() {
+            // SQLite constraint violation codes: SQLITE_CONSTRAINT = "19",
+            // UNIQUE constraint = "2067" (extended error code)
+            if code == "2067" || code == "1555" || code == "19" {
+                return OmsError::ConstraintViolation(format!("{context}: {db_err}"));
+            }
+        }
+        // Also check the message for "UNIQUE constraint failed" as a fallback
+        let msg = db_err.message();
+        if msg.contains("UNIQUE constraint failed") {
+            return OmsError::ConstraintViolation(format!("{context}: {msg}"));
+        }
+    }
+    OmsError::Internal(format!("{context}: {err}"))
+}
 fn build_search_conditions(
     prefix: &str,
     store_id: Uuid,
@@ -529,7 +549,7 @@ impl SqliteProvider {
         .bind(tenant_id)
         .fetch_optional(&mut *conn)
         .await
-        .map_err(|e| OmsError::Internal(format!("failed to query prev audit hash: {e}")))?
+        .map_err(|e| map_db_error("query prev audit hash", e))?
         .flatten();
 
         let mut hasher = Sha256::new();
@@ -560,7 +580,7 @@ impl SqliteProvider {
         .bind(&prev_hash)
         .execute(&mut *conn)
         .await
-        .map_err(|e| OmsError::Internal(format!("failed to insert audit log: {e}")))?;
+        .map_err(|e| map_db_error("insert audit log", e))?;
 
         Ok(())
     }
@@ -584,7 +604,7 @@ impl SqliteProvider {
         sqlx::query("BEGIN IMMEDIATE")
             .execute(&mut *conn)
             .await
-            .map_err(|e| OmsError::Internal(format!("failed to begin audit transaction: {e}")))?;
+            .map_err(|e| map_db_error("begin audit transaction", e))?;
 
         if let Err(e) = self
             .log_audit_on_conn(
@@ -599,7 +619,7 @@ impl SqliteProvider {
         sqlx::query("COMMIT")
             .execute(&mut *conn)
             .await
-            .map_err(|e| OmsError::Internal(format!("failed to commit audit transaction: {e}")))?;
+            .map_err(|e| map_db_error("commit audit transaction", e))?;
 
         Ok(())
     }
@@ -706,7 +726,7 @@ impl SqliteProvider {
         .bind(&request.upsert_key)
         .execute(&mut *conn)
         .await
-        .map_err(|e| OmsError::Internal(format!("failed to insert memory: {e}")))?;
+        .map_err(|e| map_db_error("insert memory", e))?;
 
         let entry = MemoryEntry {
             id,
@@ -764,7 +784,7 @@ impl SqliteProvider {
         .bind(tenant_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| OmsError::Internal(format!("failed to query space participants: {e}")))?;
+        .map_err(|e| map_db_error("query space participants", e))?;
 
         rows.iter().map(row_to_space_participant).collect()
     }
@@ -818,7 +838,7 @@ impl OmsProvider for SqliteProvider {
         .bind(&now_str)
         .execute(&self.pool)
         .await
-        .map_err(|e| OmsError::Internal(format!("failed to insert store: {e}")))?;
+        .map_err(|e| map_db_error("insert store", e))?;
 
         Ok(MemoryStore {
             id,
@@ -839,7 +859,7 @@ impl OmsProvider for SqliteProvider {
             .bind(tenant_id)
             .fetch_optional(&self.pool)
             .await
-            .map_err(|e| OmsError::Internal(format!("failed to query store: {e}")))?
+            .map_err(|e| map_db_error("query store", e))?
             .ok_or_else(|| OmsError::StoreNotFound(store_id.to_string()))?;
 
         self.row_to_store(&row)
@@ -850,7 +870,7 @@ impl OmsProvider for SqliteProvider {
             .bind(tenant_id)
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| OmsError::Internal(format!("failed to list stores: {e}")))?;
+            .map_err(|e| map_db_error("list stores", e))?;
 
         rows.iter().map(|row| self.row_to_store(row)).collect()
     }
@@ -867,7 +887,7 @@ impl OmsProvider for SqliteProvider {
             .bind(name)
             .fetch_optional(&self.pool)
             .await
-            .map_err(|e| OmsError::Internal(format!("failed to query store by name: {e}")))?
+            .map_err(|e| map_db_error("query store by name", e))?
         {
             return self.row_to_store(&row);
         }
@@ -895,7 +915,7 @@ impl OmsProvider for SqliteProvider {
         .bind(&now_str)
         .execute(&self.pool)
         .await
-        .map_err(|e| OmsError::Internal(format!("failed to insert store: {e}")))?;
+        .map_err(|e| map_db_error("insert store", e))?;
 
         if result.rows_affected() == 0 {
             // Another request created it concurrently — fetch it
@@ -953,7 +973,7 @@ impl OmsProvider for SqliteProvider {
         .bind(tenant_id)
         .execute(&self.pool)
         .await
-        .map_err(|e| OmsError::Internal(format!("failed to update store: {e}")))?;
+        .map_err(|e| map_db_error("update store", e))?;
 
         self.get_store(tenant_id, store_id).await
     }
@@ -964,7 +984,7 @@ impl OmsProvider for SqliteProvider {
             .bind(tenant_id)
             .execute(&self.pool)
             .await
-            .map_err(|e| OmsError::Internal(format!("failed to delete store: {e}")))?;
+            .map_err(|e| map_db_error("delete store", e))?;
 
         if result.rows_affected() == 0 {
             return Err(OmsError::StoreNotFound(store_id.to_string()));
@@ -1032,7 +1052,7 @@ impl OmsProvider for SqliteProvider {
         sqlx::query("BEGIN IMMEDIATE")
             .execute(&mut *conn)
             .await
-            .map_err(|e| OmsError::Internal(format!("failed to begin transaction: {e}")))?;
+            .map_err(|e| map_db_error("begin transaction", e))?;
 
         // Upsert: if upsert_key is set, look for an existing entry to replace.
         // Match on full normalized scope so that the same upsert_key in different
@@ -1064,7 +1084,7 @@ impl OmsProvider for SqliteProvider {
             .bind(&request.scope.run_id)
             .fetch_optional(&mut *conn)
             .await
-            .map_err(|e| OmsError::Internal(format!("failed to check upsert key: {e}")))?;
+            .map_err(|e| map_db_error("check upsert key", e))?;
 
             if let Some(row) = existing {
                 let existing_id_str: String = row.get("id");
@@ -1172,7 +1192,7 @@ impl OmsProvider for SqliteProvider {
                 sqlx::query("COMMIT")
                     .execute(&mut *conn)
                     .await
-                    .map_err(|e| OmsError::Internal(format!("failed to commit: {e}")))?;
+                    .map_err(|e| map_db_error("commit", e))?;
 
                 return Ok(entry);
             }
@@ -1233,7 +1253,7 @@ impl OmsProvider for SqliteProvider {
         .await
         {
             let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
-            return Err(OmsError::Internal(format!("failed to insert memory: {e}")));
+            return Err(map_db_error("insert memory", e));
         }
 
         let entry = MemoryEntry {
@@ -1279,7 +1299,7 @@ impl OmsProvider for SqliteProvider {
         sqlx::query("COMMIT")
             .execute(&mut *conn)
             .await
-            .map_err(|e| OmsError::Internal(format!("failed to commit transaction: {e}")))?;
+            .map_err(|e| map_db_error("commit transaction", e))?;
 
         Ok(entry)
     }
@@ -1297,7 +1317,7 @@ impl OmsProvider for SqliteProvider {
                 .bind(tenant_id)
                 .fetch_optional(&self.pool)
                 .await
-                .map_err(|e| OmsError::Internal(format!("failed to query memory: {e}")))?
+                .map_err(|e| map_db_error("query memory", e))?
                 .ok_or_else(|| OmsError::MemoryNotFound(memory_id.to_string()))?;
 
         row_to_memory(&row)
@@ -1378,7 +1398,7 @@ impl OmsProvider for SqliteProvider {
         let count_row = count_query
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| OmsError::Internal(format!("failed to count memories: {e}")))?;
+            .map_err(|e| map_db_error("count memories", e))?;
         let total: i64 = count_row.get("cnt");
 
         // Data query
@@ -1394,7 +1414,7 @@ impl OmsProvider for SqliteProvider {
         let rows = data_query
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| OmsError::Internal(format!("failed to list memories: {e}")))?;
+            .map_err(|e| map_db_error("list memories", e))?;
 
         let items: Result<Vec<MemoryEntry>, OmsError> = rows.iter().map(row_to_memory).collect();
 
@@ -1466,7 +1486,7 @@ impl OmsProvider for SqliteProvider {
         sqlx::query("BEGIN IMMEDIATE")
             .execute(&mut *conn)
             .await
-            .map_err(|e| OmsError::Internal(format!("failed to begin transaction: {e}")))?;
+            .map_err(|e| map_db_error("begin transaction", e))?;
 
         let result = match sqlx::query(
             "UPDATE memories SET
@@ -1527,7 +1547,7 @@ impl OmsProvider for SqliteProvider {
         sqlx::query("COMMIT")
             .execute(&mut *conn)
             .await
-            .map_err(|e| OmsError::Internal(format!("failed to commit transaction: {e}")))?;
+            .map_err(|e| map_db_error("commit transaction", e))?;
 
         // Re-fetch the updated entry
         self.get_memory(tenant_id, store_id, memory_id).await
@@ -1550,7 +1570,7 @@ impl OmsProvider for SqliteProvider {
         sqlx::query("BEGIN IMMEDIATE")
             .execute(&mut *conn)
             .await
-            .map_err(|e| OmsError::Internal(format!("failed to begin transaction: {e}")))?;
+            .map_err(|e| map_db_error("begin transaction", e))?;
 
         let result = match sqlx::query(
             "DELETE FROM memories WHERE id = ? AND store_id = ? AND tenant_id = ?",
@@ -1592,7 +1612,7 @@ impl OmsProvider for SqliteProvider {
         sqlx::query("COMMIT")
             .execute(&mut *conn)
             .await
-            .map_err(|e| OmsError::Internal(format!("failed to commit transaction: {e}")))?;
+            .map_err(|e| map_db_error("commit transaction", e))?;
 
         Ok(())
     }
@@ -1634,7 +1654,7 @@ impl OmsProvider for SqliteProvider {
             let rows = db_query
                 .fetch_all(&self.pool)
                 .await
-                .map_err(|e| OmsError::Internal(format!("failed to search memories: {e}")))?;
+                .map_err(|e| map_db_error("search memories", e))?;
 
             for row in &rows {
                 let entry = row_to_memory(row)?;
@@ -1740,7 +1760,7 @@ impl OmsProvider for SqliteProvider {
         let count_row = count_query
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| OmsError::Internal(format!("failed to count audit logs: {e}")))?;
+            .map_err(|e| map_db_error("count audit logs", e))?;
         let total: i64 = count_row.get("cnt");
 
         let data_sql = format!(
@@ -1755,7 +1775,7 @@ impl OmsProvider for SqliteProvider {
         let rows = data_query
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| OmsError::Internal(format!("failed to query audit logs: {e}")))?;
+            .map_err(|e| map_db_error("query audit logs", e))?;
 
         Ok(Page {
             items: rows.iter().map(row_to_audit).collect::<Result<_, _>>()?,
@@ -1781,7 +1801,7 @@ impl OmsProvider for SqliteProvider {
         sqlx::query("BEGIN IMMEDIATE")
             .execute(&mut *conn)
             .await
-            .map_err(|e| OmsError::Internal(format!("failed to begin transaction: {e}")))?;
+            .map_err(|e| map_db_error("begin transaction", e))?;
 
         let result = match sqlx::query(
             "DELETE FROM memories WHERE store_id = ? AND tenant_id = ? AND expires_at IS NOT NULL AND expires_at < ?",
@@ -1820,7 +1840,7 @@ impl OmsProvider for SqliteProvider {
         sqlx::query("COMMIT")
             .execute(&mut *conn)
             .await
-            .map_err(|e| OmsError::Internal(format!("failed to commit transaction: {e}")))?;
+            .map_err(|e| map_db_error("commit transaction", e))?;
 
         Ok(deleted)
     }
@@ -1948,7 +1968,7 @@ impl OmsProvider for SqliteProvider {
         .bind(inheritance.created_at.to_rfc3339())
         .execute(&self.pool)
         .await
-        .map_err(|e| OmsError::Internal(format!("failed to create inheritance: {e}")))?;
+        .map_err(|e| map_db_error("create inheritance", e))?;
 
         Ok(inheritance)
     }
@@ -1966,7 +1986,7 @@ impl OmsProvider for SqliteProvider {
                 .bind(tenant_id)
                 .execute(&self.pool)
                 .await
-                .map_err(|e| OmsError::Internal(format!("failed to delete inheritance: {e}")))?;
+                .map_err(|e| map_db_error("delete inheritance", e))?;
 
         if result.rows_affected() == 0 {
             return Err(OmsError::InvalidInput(format!(
@@ -1992,7 +2012,7 @@ impl OmsProvider for SqliteProvider {
         .bind(&request.child_agent_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| OmsError::Internal(format!("failed to query inheritance: {e}")))?
+        .map_err(|e| map_db_error("query inheritance", e))?
         .ok_or_else(|| {
             OmsError::InvalidInput(format!(
                 "inheritance not found for parent {} and child {}",
@@ -2223,7 +2243,7 @@ impl OmsProvider for SqliteProvider {
                 sqlx::query("COMMIT")
                     .execute(&mut *conn)
                     .await
-                    .map_err(|e| OmsError::Internal(format!("failed to commit bubble_up: {e}")))?;
+                    .map_err(|e| map_db_error("commit bubble_up", e))?;
                 Ok(created)
             }
             Err(e) => {
@@ -2267,7 +2287,7 @@ impl OmsProvider for SqliteProvider {
         .bind(&now)
         .execute(&self.pool)
         .await
-        .map_err(|e| OmsError::Internal(format!("failed to create shared space: {e}")))?;
+        .map_err(|e| map_db_error("create shared space", e))?;
 
         self.get_shared_space(tenant_id, store_id, id).await
     }
@@ -2286,7 +2306,7 @@ impl OmsProvider for SqliteProvider {
         .bind(tenant_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| OmsError::Internal(format!("failed to list shared spaces: {e}")))?;
+        .map_err(|e| map_db_error("list shared spaces", e))?;
 
         let mut spaces = Vec::with_capacity(rows.len());
         for row in &rows {
@@ -2309,7 +2329,7 @@ impl OmsProvider for SqliteProvider {
         .bind(tenant_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| OmsError::Internal(format!("failed to query shared space: {e}")))?
+        .map_err(|e| map_db_error("query shared space", e))?
         .ok_or_else(|| OmsError::InvalidInput(format!("shared space not found: {space_id}")))?;
 
         self.hydrate_shared_space(&row).await
@@ -2335,7 +2355,7 @@ impl OmsProvider for SqliteProvider {
         .bind(Utc::now().to_rfc3339())
         .execute(&self.pool)
         .await
-        .map_err(|e| OmsError::Internal(format!("failed to join shared space: {e}")))?;
+        .map_err(|e| map_db_error("join shared space", e))?;
 
         self.get_shared_space(tenant_id, store_id, space_id).await
     }
@@ -2354,7 +2374,7 @@ impl OmsProvider for SqliteProvider {
             .bind(&request.agent_id)
             .execute(&self.pool)
             .await
-            .map_err(|e| OmsError::Internal(format!("failed to leave shared space: {e}")))?;
+            .map_err(|e| map_db_error("leave shared space", e))?;
 
         Ok(())
     }
@@ -2373,7 +2393,7 @@ impl OmsProvider for SqliteProvider {
         .bind(tenant_id)
         .execute(&self.pool)
         .await
-        .map_err(|e| OmsError::Internal(format!("failed to delete shared space: {e}")))?;
+        .map_err(|e| map_db_error("delete shared space", e))?;
 
         if result.rows_affected() == 0 {
             return Err(OmsError::InvalidInput(format!(
@@ -2416,7 +2436,7 @@ impl OmsProvider for SqliteProvider {
         .bind(now.to_rfc3339())
         .execute(&self.pool)
         .await
-        .map_err(|e| OmsError::Internal(format!("failed to insert graph edge: {e}")))?;
+        .map_err(|e| map_db_error("insert graph edge", e))?;
 
         Ok(GraphEdge {
             id,
@@ -2444,7 +2464,7 @@ impl OmsProvider for SqliteProvider {
                 .bind(tenant_id)
                 .execute(&self.pool)
                 .await
-                .map_err(|e| OmsError::Internal(format!("failed to delete graph edge: {e}")))?;
+                .map_err(|e| map_db_error("delete graph edge", e))?;
 
         if result.rows_affected() == 0 {
             return Err(OmsError::InvalidInput(format!(
@@ -2523,7 +2543,7 @@ impl OmsProvider for SqliteProvider {
             let rows = q
                 .fetch_all(&self.pool)
                 .await
-                .map_err(|e| OmsError::Internal(format!("failed to query graph edges: {e}")))?;
+                .map_err(|e| map_db_error("query graph edges", e))?;
 
             for row in &rows {
                 let edge_id_str: String = row.get("id");
@@ -2671,7 +2691,7 @@ impl OmsProvider for SqliteProvider {
         sqlx::query("BEGIN IMMEDIATE")
             .execute(&mut *conn)
             .await
-            .map_err(|e| OmsError::Internal(format!("failed to begin transaction: {e}")))?;
+            .map_err(|e| map_db_error("begin transaction", e))?;
 
         // Collect memory IDs that will be purged (for audit cleanup)
         let select_sql = format!("SELECT id FROM memories WHERE {where_clause}");
@@ -2752,7 +2772,7 @@ impl OmsProvider for SqliteProvider {
         sqlx::query("COMMIT")
             .execute(&mut *conn)
             .await
-            .map_err(|e| OmsError::Internal(format!("failed to commit transaction: {e}")))?;
+            .map_err(|e| map_db_error("commit transaction", e))?;
 
         Ok(deleted)
     }
@@ -2770,7 +2790,7 @@ impl OmsProvider for SqliteProvider {
         .bind(tenant_id)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| OmsError::Internal(format!("failed to get stats: {e}")))?;
+        .map_err(|e| map_db_error("get stats", e))?;
 
         let total: i64 = row.get("cnt");
 
@@ -2781,7 +2801,7 @@ impl OmsProvider for SqliteProvider {
         .bind(tenant_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| OmsError::Internal(format!("failed to get layer stats: {e}")))?;
+        .map_err(|e| map_db_error("get layer stats", e))?;
 
         let mut entries_by_layer = std::collections::HashMap::new();
         for lr in &layer_rows {

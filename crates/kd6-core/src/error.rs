@@ -29,6 +29,9 @@ pub enum OmsError {
     #[error("conflict: {0}")]
     Conflict(String),
 
+    #[error("constraint violation: {0}")]
+    ConstraintViolation(String),
+
     #[error("immutable entry cannot be modified: {0}")]
     Immutable(String),
 
