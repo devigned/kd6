@@ -24,6 +24,8 @@ target
 # Node.js (examples)
 node_modules/
 dist/
+
+# SQLite runtime files
 *.db
 *.db-shm
 *.db-wal
