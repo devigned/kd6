@@ -40,7 +40,7 @@ crates/
 ├── kd6-core/      # Domain types, OmsError, OmsProvider trait (pure -- no I/O deps)
 ├── kd6-sqlite/    # SQLite SPI implementation (sqlx), migrations in migrations/
 ├── kd6-server/    # Axum HTTP server, route handlers, custom extractors
-└── kd6-mcp/       # MCP server (rmcp), 9 tools, Streamable HTTP + stdio transports
+└── kd6-mcp/       # MCP server (rmcp), 10 tools, Streamable HTTP + stdio transports
 ```
 
 - **kd6-core** is the shared contract. All other crates depend on it.
@@ -127,11 +127,11 @@ REST API rooted under `/v1/stores/{store_id}/`:
 
 ### MCP Server
 
-The MCP server (kd6-mcp) exposes 9 tools via the Model Context Protocol using
+The MCP server (kd6-mcp) exposes 10 tools via the Model Context Protocol using
 rmcp. It supports Streamable HTTP transport (default, port 8081) and stdio
 transport. Tools: `create_store`, `list_stores`, `create_memory`, `get_memory`,
 `search_memories`, `delete_memory`, `create_edge`, `traverse_graph`,
-`gdpr_purge`.
+`gdpr_purge`, `store_stats`.
 
 ### Environment Variables
 

@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 kd6-core = { path = "../kd6-core" }
+kd6-embed = { path = "../kd6-embed" }
 kd6-sqlite = { path = "../kd6-sqlite" }
 axum = { workspace = true }
 tokio = { workspace = true }
@@ -23,4 +24,6 @@ anyhow = "1"
 
 [dev-dependencies]
 axum-test = "17"
+async-trait = { workspace = true }
+kd6-embed = { path = "../kd6-embed" }
 kd6-sqlite = { path = "../kd6-sqlite" }

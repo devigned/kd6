@@ -16,6 +16,12 @@ pub struct AuditEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<serde_json::Value>,
     pub created_at: DateTime<Utc>,
+    /// When true, this entry has been anonymized by GDPR purge.
+    /// The `entry_hash` was computed from original (pre-redaction) content,
+    /// so content-hash verification should be skipped, but chain verification
+    /// (prev_hash links) remains valid.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub redacted: bool,
 }
 
 /// Filter for querying audit logs.

@@ -1,12 +1,11 @@
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
-use uuid::Uuid;
 
 use kd6_core::models::{CreateStoreRequest, MemoryStore, UpdateStoreRequest};
 
 use crate::error::ApiError;
-use crate::extract::{JsonBody, PathId, TenantId};
+use crate::extract::{resolve_store, JsonBody, PathId, StoreRef, TenantId};
 use crate::state::AppState;
 
 pub async fn create_store(
@@ -21,8 +20,9 @@ pub async fn create_store(
 pub async fn get_store(
     State(state): State<AppState>,
     TenantId(tenant): TenantId,
-    PathId(store_id): PathId<Uuid>,
+    PathId(store_ref): PathId<StoreRef>,
 ) -> Result<Json<MemoryStore>, ApiError> {
+    let store_id = resolve_store(&store_ref, &tenant, &state).await?;
     let store = state.provider.get_store(&tenant, store_id).await?;
     Ok(Json(store))
 }
@@ -38,9 +38,10 @@ pub async fn list_stores(
 pub async fn update_store(
     State(state): State<AppState>,
     TenantId(tenant): TenantId,
-    PathId(store_id): PathId<Uuid>,
+    PathId(store_ref): PathId<StoreRef>,
     JsonBody(request): JsonBody<UpdateStoreRequest>,
 ) -> Result<Json<MemoryStore>, ApiError> {
+    let store_id = resolve_store(&store_ref, &tenant, &state).await?;
     let store = state
         .provider
         .update_store(&tenant, store_id, request)
@@ -51,8 +52,9 @@ pub async fn update_store(
 pub async fn delete_store(
     State(state): State<AppState>,
     TenantId(tenant): TenantId,
-    PathId(store_id): PathId<Uuid>,
+    PathId(store_ref): PathId<StoreRef>,
 ) -> Result<StatusCode, ApiError> {
+    let store_id = resolve_store(&store_ref, &tenant, &state).await?;
     state.provider.delete_store(&tenant, store_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

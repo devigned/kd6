@@ -28,12 +28,20 @@
    - 5.6 [Audit & Compliance](#56-audit--compliance)
 6. [Authentication & Multi-Tenancy](#6-authentication--multi-tenancy)
 7. [Protocol Integration](#7-protocol-integration)
-8. [Backend Provider Interface (SPI)](#8-backend-provider-interface-spi)
-9. [Data Sovereignty](#9-data-sovereignty)
-10. [Conformance Levels](#10-conformance-levels)
-11. [Reference Implementation Guidance](#11-reference-implementation-guidance)
-12. [Relationship to Existing Work](#12-relationship-to-existing-work)
-13. [References](#13-references)
+8. [Embedding Provider Interface](#8-embedding-provider-interface)
+   - 8.1 [Motivation](#81-motivation)
+   - 8.2 [Embedding Provider SPI](#82-embedding-provider-spi)
+   - 8.3 [Store-Level Embedding Configuration](#83-store-level-embedding-configuration)
+   - 8.4 [Automatic Embedding Behavior](#84-automatic-embedding-behavior)
+   - 8.5 [Embedding Model Lifecycle](#85-embedding-model-lifecycle)
+   - 8.6 [Built-in Provider Requirements](#86-built-in-provider-requirements)
+   - 8.7 [Capability Advertisement](#87-capability-advertisement)
+9. [Backend Provider Interface (SPI)](#9-backend-provider-interface-spi)
+10. [Data Sovereignty](#10-data-sovereignty)
+11. [Conformance Levels](#11-conformance-levels)
+12. [Reference Implementation Guidance](#12-reference-implementation-guidance)
+13. [Relationship to Existing Work](#13-relationship-to-existing-work)
+14. [References](#14-references)
 
 ---
 
@@ -96,12 +104,31 @@ MemoryStore:
     backend: BackendConfig                # pluggable backend configuration
     default_ttl: duration | null          # default TTL for new entries
     default_sharing_policy: SharingPolicy # default access policy
-    embedding_model: string | null        # model for vector embeddings
+    embedding:                            # embedding provider config (see section 8)
+      provider: string | null             #   provider identifier (e.g., "openai", "ollama")
+      model: string | null                #   model name (e.g., "text-embedding-3-small")
+      dimensions: int | null              #   override dimensions (if supported by model)
     compaction_policy: CompactionPolicy | null
   metadata: map<string, string>           # arbitrary user metadata
   created_at: timestamp
   updated_at: timestamp
 ```
+
+#### 4.1.1 Default Store and Auto-Provisioning
+
+Implementations MAY support a **default store** identified by the well-known alias `_default`. When enabled, any API call that would normally require a `store_id` path parameter MAY use `_default` as the store identifier.
+
+When auto-provisioning is enabled and a write operation (memory creation, upsert) targets a store or tenant that does not yet exist, the service MUST lazily create the missing entities before completing the write:
+
+1. If the resolved tenant does not exist, create it with implementation-defined defaults.
+2. If the target store does not exist within the resolved tenant (whether `_default` or an explicitly named store), create it with implementation-defined default configuration.
+3. Return the write result as normal. The caller does not need to distinguish between a pre-existing store and a newly provisioned one.
+
+This lazy provisioning means an agent's very first memory write is self-sufficient. No setup calls are required. Read operations against non-existent stores or tenants MUST return empty results (not errors), so that search-before-write patterns also work without prior provisioning.
+
+This feature is intended for development, single-agent, and evaluation scenarios where explicit store and tenant management adds unnecessary ceremony. Implementations that enable it SHOULD document the default configuration applied to auto-provisioned stores.
+
+> **Security consideration:** In multi-tenant production deployments, auto-provisioning may allow any authenticated agent to implicitly create tenants or provision storage. Implementations MUST provide a configuration flag to disable auto-provisioning and MUST disable it by default when the deployment is configured for multi-tenant operation. When disabled, writes targeting non-existent stores MUST be rejected with `404 Not Found` and requests with unrecognized tenant context MUST be rejected with `403 Forbidden`.
 
 ### 4.2 Memory Layers
 
@@ -128,8 +155,9 @@ MemoryEntry:
   id: string (UUID)
   store_id: string
   layer: "working" | "episodic" | "semantic" | "procedural" | "archival"
-  content: string | object                # the memory content
-  embedding: float[] | null               # vector representation (computed by service or provided)
+  content: string | object                # the memory content (see 4.3.1)
+  embedding: float[] | null               # vector representation (server-computed or caller-provided; see section 8)
+  upsert_key: string | null               # optional idempotency key for upsert semantics (see 4.3.2)
   metadata:
     owner_agent_id: string                # which agent created this entry
     scope: MemoryScope                    # visibility and sharing scope
@@ -139,7 +167,7 @@ MemoryEntry:
     temporal:                             # optional temporal metadata (inspired by Zep [10])
       valid_from: timestamp | null        # when this fact became true
       valid_until: timestamp | null       # when this fact became false (null = still valid)
-      confidence: float | null            # confidence score (0.0–1.0)
+      confidence: float | null            # confidence score (0.0-1.0)
   access_control:
     policy: "private" | "inherit" | "shared" | "public_read"
     allowed_agents: string[] | null       # specific agents granted access
@@ -155,13 +183,34 @@ MemoryEntry:
     relationships: Relationship[] | null  # edges to other entities
 ```
 
+#### 4.3.1 Content Format
+
+The `content` field accepts both plain strings and structured JSON objects. When a client provides a plain string, the service MUST accept it as the full memory content and return it as a string in subsequent reads. Implementations MUST NOT require clients to wrap text in a JSON envelope (e.g., `{"text": "..."}`) when the content is unstructured text.
+
+Structured content is appropriate when the memory carries typed fields, key-value metadata, or nested data that the client wants to preserve with schema. The service MUST round-trip structured content without modification.
+
+#### 4.3.2 Upsert Semantics
+
+The `upsert_key` field enables atomic create-or-replace behavior. When a `POST` to the memory creation endpoint includes a non-null `upsert_key`, the service MUST apply the following logic:
+
+1. Search for an existing memory entry within the same `store_id`, `layer`, and `scope` that has a matching `upsert_key`.
+2. If a match exists: replace its `content`, increment its `version`, update `updated_at`, and return the updated entry. The previous content MUST be recorded in the audit trail.
+3. If no match exists: create a new entry as normal.
+
+This operation MUST be atomic. Concurrent upserts with the same key MUST serialize and produce a consistent result (last writer wins). The `upsert_key` is scoped to the combination of store, layer, and scope to prevent unintended collisions across organizational boundaries.
+
+**Use cases:**
+- Storing agent preferences that should have exactly one current value (e.g., `upsert_key: "preference:theme"`)
+- Maintaining singleton facts that are periodically refreshed (e.g., `upsert_key: "agent-status:summarizer"`)
+- Avoiding search-then-delete-then-create race conditions in concurrent agent systems
+
 ### 4.4 Memory Scope (Hierarchical)
 
 Scopes define visibility boundaries and enable parent-child memory inheritance. The design follows a hierarchical model where more specific scopes inherit from broader ones:
 
 ```yaml
 MemoryScope:
-  tenant_id: string               # REQUIRED — the hard isolation boundary
+  tenant_id: string               # REQUIRED -- the hard isolation boundary
   org_id: string | null           # organizational unit within tenant
   team_id: string | null          # team within org
   project_id: string | null       # project within team
@@ -170,6 +219,18 @@ MemoryScope:
   session_id: string | null       # specific conversation session
   run_id: string | null           # specific execution run
 ```
+
+#### 4.4.1 Default Tenant
+
+Implementations MAY support a **default tenant** identified by the well-known value `_default`. When enabled, requests that do not provide explicit tenant context (no `X-Tenant-ID` header, no `tenant_id` JWT claim) are resolved to the default tenant.
+
+When combined with auto-provisioning (see 4.1.1), the default tenant is lazily created on the first write operation that resolves to it. This allows agents and frameworks that have no concept of multi-tenancy to issue their first memory write with zero prior setup.
+
+This feature is intended for local development, single-user tools, and evaluation environments where tenant management is unnecessary overhead.
+
+> **Security consideration:** Enabling default tenant resolution in a multi-tenant production deployment constitutes a security risk. A request that omits tenant context would silently resolve to the default tenant rather than being rejected, potentially causing data to land in the wrong isolation boundary. Implementations MUST provide a configuration flag to disable default tenant support and MUST disable it by default when the deployment is configured for multi-tenant operation.
+
+When default tenant support is disabled, requests that omit tenant context MUST be rejected with `400 Bad Request`.
 
 **Scope resolution rules:**
 
@@ -253,12 +314,14 @@ DELETE /v1/stores/{store_id}                # Delete store (with policy enforcem
 ### 5.2 Memory CRUD
 
 ```
-POST   /v1/stores/{store_id}/memories                # Create memory entry
+POST   /v1/stores/{store_id}/memories                # Create memory entry (supports upsert, see 4.3.2)
 GET    /v1/stores/{store_id}/memories/{memory_id}     # Get by ID
 PATCH  /v1/stores/{store_id}/memories/{memory_id}     # Update entry (versioned)
 DELETE /v1/stores/{store_id}/memories/{memory_id}     # Delete entry (audited)
 GET    /v1/stores/{store_id}/memories                 # List with filters + pagination
 ```
+
+The `store_id` path parameter accepts either a concrete store UUID or the well-known alias `_default` when default store support is enabled (see 4.1.1). This alias resolution applies to all store-scoped endpoints across the API surface.
 
 ### 5.3 Memory Search
 
@@ -268,6 +331,7 @@ Content-Type: application/json
 
 {
   "query": "string",                    // natural language or structured query
+  "embedding": [0.1, 0.2, ...] | null, // optional pre-computed query embedding
   "layers": ["episodic", "semantic"],   // which layers to search
   "scope": { ... },                     // scope filter
   "top_k": 10,
@@ -284,6 +348,8 @@ Content-Type: application/json
   "include_graph": false                // traverse graph relationships
 }
 ```
+
+When the store has a configured embedding provider (see section 8), the `embedding` field is optional — the service computes a query embedding from `query` automatically. When no embedding provider is configured, callers must supply `embedding` for vector search or set `keyword: true` for text-only search.
 
 ### 5.4 Memory Lifecycle
 
@@ -325,12 +391,12 @@ POST   /v1/stores/{store_id}/purge                           # GDPR right-to-era
 ## 6. Authentication & Multi-Tenancy
 
 Every request MUST include:
-- **Tenant context** — via `X-Tenant-ID` header or `tenant_id` claim in JWT
-- **Agent identity** — via `X-Agent-ID` header or `agent_id` claim in JWT
-- **Authentication** — OAuth 2.1 bearer token or mTLS
+- **Tenant context** -- via `X-Tenant-ID` header or `tenant_id` claim in JWT. Implementations that support default tenant resolution (see 4.4.1) MAY omit this requirement for requests targeting the default tenant.
+- **Agent identity** -- via `X-Agent-ID` header or `agent_id` claim in JWT
+- **Authentication** -- OAuth 2.1 bearer token or mTLS
 
 The service MUST enforce:
-- **Tenant isolation** at the data layer — requests MUST NOT cross tenant boundaries under any circumstances
+- **Tenant isolation** at the data layer -- requests MUST NOT cross tenant boundaries under any circumstances
 - **Agent-level authorization** per the entry's `access_control` policy
 - **Rate limiting** per tenant and per agent
 - **Audit logging** for all write operations
@@ -371,7 +437,270 @@ When agents delegate tasks across boundaries [19]:
 
 ---
 
-## 8. Backend Provider Interface (SPI)
+## 8. Embedding Provider Interface
+
+Server-side embedding is a core capability that allows OMS implementations to automatically compute vector representations for memory content. This eliminates the requirement for callers to supply pre-computed embeddings and enables seamless integration with agent frameworks that treat the memory backend as a "text in, relevance out" service.
+
+### 8.1 Motivation
+
+Most agent frameworks (LangChain, CrewAI, Google ADK, Squad) send plain text to their memory backend and expect the backend to handle vectorization. Without server-side embedding, every client adapter must independently manage an embedding model — introducing latency (extra network hop), cost (duplicate model loading), and complexity (version skew between embedding models across clients). This was identified as the P0 integration gap blocking LangChain and other major frameworks from using OMS backends.
+
+By defining embedding as a first-class concern in the OMS spec, implementations gain:
+- **Zero-config integration** — agents write text, the service handles the rest
+- **Consistency** — all memories in a store use the same embedding model and dimensions
+- **Upgradeability** — the store owner can upgrade the embedding model without changing clients
+- **Hybrid search** — keyword (BM25) and vector search merge naturally when embeddings are always present
+
+### 8.1.1 Client-Side vs. Server-Side Embedding
+
+OMS supports two embedding strategies. The choice is made **per-request**, not per-store, and the two strategies can coexist within the same store:
+
+| Strategy | How it works | When to use |
+|---|---|---|
+| **Server-side (recommended)** | Caller sends plain text. The OMS service computes the embedding using its configured provider before storing or searching. | Default path. Simplest for callers. Guarantees model consistency across all entries. Required for framework integrations (LangChain, CrewAI, etc.) that send text only. |
+| **Client-side** | Caller computes the embedding externally and includes it in the `embedding` field of the request. The service validates dimensionality but does **not** re-embed. | Advanced use cases where the caller controls the model (e.g., fine-tuned domain embeddings, multi-modal embeddings, or embeddings computed during an upstream pipeline step). |
+
+**Design principles:**
+
+1. **Server-side is the default.** When the `embedding` field is absent from a write or search request, the service MUST compute it from content/query text. This makes the simplest possible API call — `{"content": "some text"}` — fully functional with vector search.
+
+2. **Client-side is an opt-in override.** When the caller provides an `embedding` field, the service uses it as-is. This respects caller expertise while still enforcing dimensionality constraints.
+
+3. **Consistency within a store.** All embeddings in a store MUST share the same dimensionality, regardless of whether they were computed server-side or client-side. A client-provided embedding with the wrong dimensionality MUST be rejected. Callers who provide their own embeddings are responsible for using a model that produces vectors in the same semantic space as the store's configured provider — mixing incompatible models degrades search quality.
+
+4. **No embedding function required in client adapters.** Framework integrations (e.g., LangChain VectorStore, CrewAI RAGStorage) SHOULD default to server-side embedding, making the embedding parameter optional in client constructors. This is the key usability win: `store = KD6VectorStore(base_url="http://localhost:8080")` works with no embedding model configuration on the client side.
+
+### 8.2 Embedding Provider SPI
+
+Implementations MUST support a pluggable embedding provider interface. The interface is intentionally minimal to accommodate local models, remote APIs, and managed services:
+
+```python
+class EmbeddingProvider(ABC):
+    """Computes vector embeddings from text content.
+    
+    Implementations may call a local model (e.g., ONNX, Sentence Transformers),
+    a remote API (e.g., OpenAI, Azure OpenAI, Cohere, Voyager), or a managed
+    service (e.g., Vertex AI, Amazon Bedrock).
+    """
+
+    @abstractmethod
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """Compute embeddings for one or more text strings.
+        
+        Args:
+            texts: The input strings to embed. Each string may be a plain
+                   memory content string or a query string.
+        
+        Returns:
+            A list of embedding vectors, one per input text.
+            All vectors MUST have the same dimensionality.
+        
+        Raises:
+            EmbeddingError: If the provider is unavailable or the input
+                            exceeds provider-specific limits.
+        """
+        ...
+
+    @abstractmethod
+    def embed_query(self, query: str) -> list[float]:
+        """Compute a single embedding for a search query.
+        
+        Some embedding models use different prefixes or instructions for
+        queries vs. documents (e.g., "query: " vs. "passage: " in E5 models).
+        This method allows the provider to apply query-specific preprocessing.
+        
+        Default implementations MAY delegate to embed_texts([query])[0].
+        """
+        ...
+
+    @abstractmethod
+    def dimensions(self) -> int:
+        """Return the dimensionality of embeddings produced by this provider.
+        
+        This value MUST be constant for the lifetime of the provider instance
+        and MUST match the length of all vectors returned by embed_texts
+        and embed_query.
+        """
+        ...
+
+    @abstractmethod
+    def model_id(self) -> str:
+        """Return a stable identifier for the embedding model.
+        
+        Used for tracking which model produced stored embeddings, enabling
+        migration detection when a store's model is upgraded.
+        
+        Examples: "text-embedding-3-small", "all-MiniLM-L6-v2",
+                  "voyage-3", "text-embedding-004"
+        """
+        ...
+```
+
+### 8.3 Store-Level Embedding Configuration
+
+Each memory store MAY be configured with an embedding provider. The `embedding` field in `StoreConfig` specifies the provider and its parameters:
+
+```yaml
+StoreConfig:
+  embedding:
+    provider: string           # provider identifier (e.g., "openai", "ollama", "sentence-transformers")
+    model: string              # model name within the provider (e.g., "text-embedding-3-small")
+    dimensions: int | null     # override dimensions (for models that support variable dimensions)
+    options: map<string, string>  # provider-specific options (e.g., base_url, api_version)
+```
+
+When `embedding` is `null` or omitted, the store operates in **pass-through mode**: callers MUST supply pre-computed embeddings for vector search, and keyword search remains available without embeddings. This preserves backward compatibility and supports use cases where the caller controls the embedding model.
+
+### 8.4 Automatic Embedding Behavior
+
+When a store has a configured embedding provider, the service MUST apply the following rules. These rules implement the client-side/server-side coexistence described in section 8.1.1: server-side embedding is the default, and client-provided embeddings are accepted as an opt-in override.
+
+#### 8.4.1 On Memory Write (`POST /v1/stores/{store_id}/memories`)
+
+1. **Client-side override:** If the request includes a non-null `embedding` field, use the caller-provided embedding as-is. The service MUST validate that the dimensionality matches the store's configured model and reject mismatches with `422 Unprocessable Entity`.
+2. **Server-side default:** If the request omits `embedding` (or sets it to `null`) and a provider is configured, the service MUST extract text from `content` and compute an embedding before storing:
+   - For string content: embed the string directly.
+   - For structured (JSON object) content: serialize to a canonical text representation. Implementations SHOULD concatenate string-typed leaf values. Implementations MAY accept a `content_text_field` store config option to specify which field(s) to embed (e.g., `"text"`, `"body"`).
+3. **Pass-through mode:** If the request omits `embedding` and no provider is configured (pass-through mode), the memory is stored without an embedding. Vector search will not return this entry, but keyword search will.
+4. The computed or provided embedding MUST be stored alongside the memory entry and returned in subsequent reads (when the `embedding` field is requested).
+5. Batch write operations (`POST /v1/stores/{store_id}/batch`) MUST apply the same rules per entry. Implementations SHOULD batch embedding calls to the provider for efficiency.
+
+#### 8.4.2 On Memory Update (`PATCH /v1/stores/{store_id}/memories/{memory_id}`)
+
+1. If the update modifies `content` and includes a new `embedding`, use the caller-provided embedding (client-side override). Validate dimensionality.
+2. If the update modifies `content` but omits `embedding`, the service MUST recompute the embedding from the new content using the configured provider (server-side default).
+3. If the update does not modify `content`, the existing embedding MUST be preserved regardless of whether `embedding` is present in the request.
+
+#### 8.4.3 On Search (`POST /v1/stores/{store_id}/search`)
+
+1. **Client-side override:** If the request includes a non-null `embedding` field, use it as the query vector for similarity search. The service does not embed the `query` string.
+2. **Server-side default:** If the request omits `embedding`, the service MUST compute a query embedding from the `query` string using the provider's `embed_query` method before performing similarity search.
+3. **Pass-through mode:** If the request omits `embedding` and no provider is configured, vector similarity search is not available. The service MUST fall back to keyword-only search if a `query` string is present, or reject the request with `400 Bad Request` if keyword search is also not applicable.
+4. When `keyword: true` is also set, the service performs both keyword and vector search and merges results using the existing merge strategy (see section 5.3).
+
+This means a minimal search request — `{"query": "user preferences", "top_k": 10}` — performs full hybrid search (keyword + vector) when the store has an embedding provider and keyword search is available. No embedding knowledge is required on the caller side.
+
+### 8.5 Embedding Model Lifecycle
+
+#### 8.5.1 Model Versioning
+
+Each stored embedding SHOULD be tagged with the `model_id` that produced it. Implementations MAY store this as metadata on the memory entry or as a store-level field in the database schema.
+
+When a store's embedding model is changed (via `PATCH /v1/stores/{store_id}`), the service MUST NOT silently mix embeddings from different models in search results, as this produces meaningless similarity scores. Implementations MUST choose one of the following strategies:
+
+1. **Lazy re-embedding (recommended):** Mark all existing entries as needing re-embedding. Recompute embeddings in the background or on next read. Search results during the migration period may exclude stale entries or return them with degraded scores.
+2. **Eager re-embedding:** Immediately recompute all embeddings in the store. This may be expensive for large stores but ensures instant consistency.
+3. **Reject model change:** Refuse to change the embedding model on a store that contains entries. Require the caller to create a new store and migrate entries explicitly.
+
+Implementations MUST document which strategy they use.
+
+#### 8.5.2 Dimensionality Constraints
+
+All embeddings within a single store MUST have the same dimensionality. The dimensionality is determined by the store's configured embedding provider (or by the first caller-provided embedding if no provider is configured). Subsequent writes with mismatched dimensionality MUST be rejected with `422 Unprocessable Entity`.
+
+### 8.6 Built-in Provider Requirements
+
+Implementations at Level 1 conformance are NOT required to include any embedding provider — pass-through mode with keyword search is sufficient.
+
+Implementations at Level 2 and above SHOULD provide at least one built-in embedding provider or document how to configure an external one. Recommended provider categories:
+
+| Category | Examples | Trade-offs |
+|---|---|---|
+| **Local model** | ONNX Runtime, Sentence Transformers, FastEmbed | No network dependency, no API costs; requires CPU/GPU on the OMS host |
+| **Remote API** | OpenAI, Azure OpenAI, Cohere, Voyager, Google Vertex AI | High quality, no local resources; adds latency and API costs |
+| **Sidecar** | Ollama, vLLM, TEI (Text Embeddings Inference) | Decoupled scaling, GPU isolation; requires separate deployment |
+
+### 8.7 Capability Advertisement
+
+The `ProviderCapabilities` object (see section 9) MUST include embedding-related fields:
+
+```python
+@dataclass
+class EmbeddingCapabilities:
+    server_side_embedding: bool        # true if the provider has a configured embedding provider
+    model_id: str | None               # the active embedding model identifier
+    dimensions: int | None             # dimensionality of embeddings produced
+    max_batch_size: int | None         # maximum texts per embed_texts call (null = unlimited)
+    supports_query_prefix: bool        # true if embed_query applies distinct preprocessing
+```
+
+This allows clients to discover which embedding strategy to use:
+
+```http
+GET /v1/stores/{store_id}
+→ { "capabilities": { "embedding": { "server_side_embedding": true, "model_id": "text-embedding-3-small", "dimensions": 1536 } } }
+```
+
+**Client behavior based on capabilities:**
+
+- `server_side_embedding: true` — Clients SHOULD omit the `embedding` field in requests and let the server handle vectorization. This is the simplest integration path and is required for framework adapters (LangChain, CrewAI, etc.) that do not manage embedding models. Clients MAY still provide embeddings for override purposes.
+- `server_side_embedding: false` — Clients MUST supply their own embeddings for vector search, or restrict to keyword-only search. Framework adapters that cannot provide embeddings SHOULD document this limitation clearly.
+
+### 8.8 Reference Implementation (KD6)
+
+The KD6 reference implementation provides two embedding providers selected via the `KD6_EMBEDDING_PROVIDER` environment variable:
+
+| Provider | `KD6_EMBEDDING_PROVIDER` | Description |
+|---|---|---|
+| **Local (default)** | `local` | In-process ONNX inference via [fastembed-rs](https://github.com/Anush008/fastembed-rs). Default model: `all-MiniLM-L6-v2` (384 dimensions, ~25MB). Downloads on first use, cached thereafter. No API keys or external services required. |
+| **OpenAI-compatible** | `openai-compatible` | Calls any endpoint implementing the OpenAI `/v1/embeddings` API: OpenAI, Azure OpenAI, Ollama, vLLM, LiteLLM, etc. |
+| **None** | `none` | Pass-through mode. No embeddings are computed. Callers must supply embeddings in requests or use keyword-only search. |
+
+**Environment variables:**
+
+```bash
+# Local provider (default — no configuration needed)
+KD6_EMBEDDING_PROVIDER=local
+
+# OpenAI-compatible remote provider
+KD6_EMBEDDING_PROVIDER=openai-compatible
+KD6_EMBEDDING_ENDPOINT=https://api.openai.com/v1    # required
+KD6_EMBEDDING_MODEL=text-embedding-3-small           # required
+KD6_EMBEDDING_API_KEY=sk-...                         # optional (not needed for Ollama)
+KD6_EMBEDDING_DIMENSIONS=1536                        # optional (default: 1536)
+
+# Disable embedding
+KD6_EMBEDDING_PROVIDER=none
+```
+
+**Behavior:**
+- On write: if the request omits `embedding`, the configured provider computes it from `content` before storing. Caller-provided embeddings are used as-is but validated for correct dimensionality.
+- On search: if the request omits `embedding`, the provider computes a query embedding from `query` before performing vector similarity search.
+- On update: if `content` changes and no new `embedding` is provided, the provider recomputes the embedding.
+- Dimensionality mismatches between caller-provided embeddings and the configured model are rejected with `400 Bad Request`.
+
+### 8.9 Framework Integration Pattern
+
+The client-side/server-side embedding design enables a clean integration pattern for agent frameworks. Because the OMS service handles embedding, client adapters do not need an embedding model — they are thin HTTP clients that map framework APIs to OMS REST calls.
+
+**Example: LangChain VectorStore adapter**
+
+LangChain's `VectorStore` interface expects `add_texts(texts)` to handle vectorization and `similarity_search(query)` to return relevant documents. With server-side embedding, the adapter simply forwards text to the OMS API:
+
+```python
+from langchain_core.vectorstores import VectorStore
+
+class KD6VectorStore(VectorStore):
+    def __init__(self, base_url="http://localhost:8080", embedding=None):
+        # embedding parameter is optional — server handles it by default
+        self._base_url = base_url
+        self._embedding = embedding  # client-side override (optional)
+
+    def add_texts(self, texts, metadatas=None, **kwargs):
+        entries = [{"content": text, ...} for text in texts]
+        # No embedding computation needed — KD6 does it server-side
+        return self._post("/memories/batch", {"entries": entries})
+
+    def similarity_search(self, query, k=4, **kwargs):
+        # Just send the query string — KD6 embeds and searches
+        return self._post("/search", {"query": query, "top_k": k})
+```
+
+This pattern applies to any framework: the adapter maps the framework's text-based API to OMS REST calls, and the server handles embedding transparently. The optional `embedding` parameter allows advanced callers to provide pre-computed vectors when they need control over the embedding model.
+
+---
+
+## 9. Backend Provider Interface (SPI)
 
 For customers who want to implement their own memory backend, the spec defines a **Service Provider Interface (SPI):**
 
@@ -394,7 +723,11 @@ class OMSProvider(ABC):
 
     # --- Memory CRUD ---
     @abstractmethod
-    def put(self, store_id: str, entry: MemoryEntry) -> MemoryEntry: ...
+    def put(self, store_id: str, entry: MemoryEntry) -> MemoryEntry:
+        """Create a memory entry. If entry.upsert_key is set and a matching
+        entry exists in the same store, layer, and scope, the existing entry
+        is replaced atomically (see 4.3.2)."""
+        ...
     @abstractmethod
     def get(self, store_id: str, memory_id: str) -> MemoryEntry: ...
     @abstractmethod
@@ -445,6 +778,7 @@ class ProviderCapabilities:
     pub_sub_notifications: bool               # supports real-time change notifications
     encryption_at_rest: bool
     audit_log: bool
+    embedding: EmbeddingCapabilities | None   # server-side embedding support (see section 8)
 ```
 
 This enables:
@@ -455,7 +789,7 @@ This enables:
 
 ---
 
-## 9. Data Sovereignty
+## 10. Data Sovereignty
 
 Data sovereignty is a first-class concern in the OMS spec:
 
@@ -482,7 +816,7 @@ SovereigntyConfig:
 
 ---
 
-## 10. Conformance Levels
+## 11. Conformance Levels
 
 To enable incremental adoption and community contribution, the spec defines three conformance levels:
 
@@ -497,6 +831,15 @@ An implementation at this level provides basic memory functionality:
 - Tenant isolation via scope (at minimum, `tenant_id` enforcement)
 - Authentication (OAuth 2.1 bearer token)
 - Capabilities discovery endpoint
+- Plain string content support (see 4.3.1)
+- Upsert semantics via `upsert_key` (see 4.3.2)
+
+**Optional at Level 1:**
+- Default store alias `_default` with auto-provisioning (see 4.1.1)
+- Default tenant resolution (see 4.4.1)
+- Server-side embedding via a configured `EmbeddingProvider` (see section 8). When not configured, callers must supply pre-computed embeddings for vector search. Keyword-only search remains available without an embedding provider.
+
+These optional features lower the adoption barrier for single-agent and development scenarios. When both are enabled, an agent's first memory write requires zero setup calls. Implementations that support them MUST document their security implications and provide configuration to disable them in production.
 
 **Estimated implementation effort:** 2–4 weeks for a team familiar with vector databases.
 
@@ -512,6 +855,7 @@ All of Level 1, plus:
 - Keyword/BM25 search
 - Batch operations
 - Hierarchical scoping (at minimum: tenant → agent → session)
+- Server-side embedding with at least one built-in or configurable `EmbeddingProvider` (see section 8)
 
 **Estimated implementation effort:** 2–3 months.
 
@@ -533,7 +877,7 @@ All of Level 2, plus:
 
 ---
 
-## 11. Reference Implementation Guidance
+## 12. Reference Implementation Guidance
 
 A reference implementation targeting Azure SHOULD use the following technology mapping:
 
@@ -546,12 +890,12 @@ A reference implementation targeting Azure SHOULD use the following technology m
 | Archival | MinIO / S3 | Azure Blob Storage | Lifecycle policies for cost optimization |
 | Metadata / Config | PostgreSQL | Cosmos DB for PostgreSQL | Tenant registry, store config |
 | Audit Log | Append-only log | Azure Event Hubs → Data Explorer | Partitioned by tenant |
-| Embedding | Local model (e.g., Sentence Transformers) | Azure OpenAI (text-embedding-3-*) | Configurable per store |
+| Embedding | FastEmbed (ONNX) / Local model | Azure OpenAI (text-embedding-3-*) | Local default; remote override (see section 8.8) |
 | Tenant Orchestration | Kubernetes + Helm | AKS (namespace-per-tenant) | Tiered isolation model |
 
 ---
 
-## 12. Relationship to Existing Work
+## 13. Relationship to Existing Work
 
 The OMS spec draws from and complements existing work:
 
@@ -570,7 +914,7 @@ The OMS spec draws from and complements existing work:
 
 ---
 
-## 13. References
+## 14. References
 
 [1] Tulving, E. (1972). "Episodic and Semantic Memory." In E. Tulving & W. Donaldson (Eds.), *Organization of Memory* (pp. 381–403). Academic Press.
 

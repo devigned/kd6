@@ -265,6 +265,7 @@ fn row_to_audit(row: &sqlx::sqlite::SqliteRow) -> Result<AuditEntry, OmsError> {
         created_at: DateTime::parse_from_rfc3339(&created_at)
             .map_err(|e| OmsError::Internal(format!("invalid audit created_at: {e}")))?
             .with_timezone(&Utc),
+        redacted: row.try_get::<i32, _>("redacted").unwrap_or(0) != 0,
     })
 }
 
@@ -429,6 +430,7 @@ fn row_to_memory(row: &sqlx::sqlite::SqliteRow) -> Result<MemoryEntry, OmsError>
         },
         confidence: row.get("confidence"),
         entity_type: row.get("entity_type"),
+        upsert_key: row.get("upsert_key"),
     })
 }
 
@@ -602,6 +604,148 @@ impl SqliteProvider {
         Ok(())
     }
 
+    /// Insert a single memory entry on an existing connection/transaction.
+    /// Does NOT manage transactions — caller is responsible for BEGIN/COMMIT/ROLLBACK.
+    /// Returns the created `MemoryEntry`.
+    async fn insert_memory_on_conn(
+        &self,
+        conn: &mut SqliteConnection,
+        tenant_id: &str,
+        store_id: Uuid,
+        request: CreateMemoryRequest,
+    ) -> Result<MemoryEntry, OmsError> {
+        let mut request = request;
+        request.scope = request.scope.normalize(tenant_id);
+
+        let id = Uuid::new_v4();
+        let now = Utc::now();
+        let now_str = now.to_rfc3339();
+        let embedding_blob = request.embedding.as_ref().map(|v| embedding_to_bytes(v));
+        let tags_json = serde_json::to_string(&request.tags)
+            .map_err(|e| OmsError::Internal(format!("failed to serialize tags: {e}")))?;
+        let categories_json = serde_json::to_string(&request.categories)
+            .map_err(|e| OmsError::Internal(format!("failed to serialize categories: {e}")))?;
+        let source_json = request
+            .source
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| OmsError::Internal(format!("failed to serialize source: {e}")))?;
+        let access_policy = access_policy_to_str(&request.access_control.policy);
+        let allowed_agents_json = request
+            .access_control
+            .allowed_agents
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| OmsError::Internal(format!("failed to serialize allowed_agents: {e}")))?;
+        let allowed_scopes_json = request
+            .access_control
+            .allowed_scopes
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| OmsError::Internal(format!("failed to serialize allowed_scopes: {e}")))?;
+        let content_json = serde_json::to_string(&request.content)
+            .map_err(|e| OmsError::Internal(format!("failed to serialize content: {e}")))?;
+        let layer_str = request.layer.to_string();
+        let expires_str = request.expires_at.map(|t| t.to_rfc3339());
+        let valid_from_str = request.valid_from.as_ref().map(DateTime::to_rfc3339);
+        let valid_until_str = request.valid_until.as_ref().map(DateTime::to_rfc3339);
+
+        sqlx::query(
+            "INSERT INTO memories (
+                id, store_id, tenant_id, layer, content_json, embedding,
+                owner_agent_id,
+                scope_tenant_id, scope_org_id, scope_team_id, scope_project_id,
+                scope_user_id, scope_agent_id, scope_session_id, scope_run_id,
+                tags_json, categories_json, source_json,
+                access_policy, allowed_agents_json, allowed_scopes_json,
+                created_at, updated_at, expires_at, immutable, version,
+                valid_from, valid_until, confidence, entity_type, upsert_key
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?,
+                ?,
+                ?, ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?, ?, 1,
+                ?, ?, ?, ?, ?
+            )",
+        )
+        .bind(id.to_string())
+        .bind(store_id.to_string())
+        .bind(tenant_id)
+        .bind(&layer_str)
+        .bind(&content_json)
+        .bind(&embedding_blob)
+        .bind(&request.owner_agent_id)
+        .bind(&request.scope.tenant_id)
+        .bind(&request.scope.org_id)
+        .bind(&request.scope.team_id)
+        .bind(&request.scope.project_id)
+        .bind(&request.scope.user_id)
+        .bind(&request.scope.agent_id)
+        .bind(&request.scope.session_id)
+        .bind(&request.scope.run_id)
+        .bind(&tags_json)
+        .bind(&categories_json)
+        .bind(&source_json)
+        .bind(access_policy)
+        .bind(&allowed_agents_json)
+        .bind(&allowed_scopes_json)
+        .bind(&now_str)
+        .bind(&now_str)
+        .bind(&expires_str)
+        .bind(request.immutable)
+        .bind(&valid_from_str)
+        .bind(&valid_until_str)
+        .bind(request.confidence)
+        .bind(&request.entity_type)
+        .bind(&request.upsert_key)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| OmsError::Internal(format!("failed to insert memory: {e}")))?;
+
+        let entry = MemoryEntry {
+            id,
+            store_id,
+            layer: request.layer,
+            content: request.content,
+            embedding: request.embedding,
+            owner_agent_id: request.owner_agent_id,
+            scope: request.scope,
+            tags: request.tags,
+            categories: request.categories,
+            source: request.source,
+            access_control: request.access_control,
+            created_at: now,
+            updated_at: now,
+            expires_at: request.expires_at,
+            immutable: request.immutable,
+            version: 1,
+            valid_from: request.valid_from,
+            valid_until: request.valid_until,
+            confidence: request.confidence,
+            entity_type: request.entity_type,
+            upsert_key: request.upsert_key,
+        };
+
+        self.log_audit_on_conn(
+            conn,
+            tenant_id,
+            store_id,
+            Some(entry.id),
+            "create",
+            Some(entry.owner_agent_id.as_str()),
+            Some(serde_json::json!({"version": entry.version})),
+        )
+        .await?;
+
+        Ok(entry)
+    }
+
     async fn get_space_participants(
         &self,
         tenant_id: &str,
@@ -709,6 +853,74 @@ impl OmsProvider for SqliteProvider {
             .map_err(|e| OmsError::Internal(format!("failed to list stores: {e}")))?;
 
         rows.iter().map(|row| self.row_to_store(row)).collect()
+    }
+
+    async fn get_or_create_store(
+        &self,
+        tenant_id: &str,
+        name: &str,
+        request: CreateStoreRequest,
+    ) -> Result<MemoryStore, OmsError> {
+        // Try to find existing store first
+        if let Some(row) = sqlx::query("SELECT * FROM stores WHERE tenant_id = ? AND name = ?")
+            .bind(tenant_id)
+            .bind(name)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| OmsError::Internal(format!("failed to query store by name: {e}")))?
+        {
+            return self.row_to_store(&row);
+        }
+
+        // Attempt atomic insert; unique index prevents duplicates
+        let id = Uuid::new_v4();
+        let now = Utc::now();
+        let now_str = now.to_rfc3339();
+        let config_json = serde_json::to_string(&request.config)
+            .map_err(|e| OmsError::Internal(format!("failed to serialize config: {e}")))?;
+        let metadata_json = serde_json::to_string(&request.metadata)
+            .map_err(|e| OmsError::Internal(format!("failed to serialize metadata: {e}")))?;
+
+        let result = sqlx::query(
+            "INSERT OR IGNORE INTO stores (id, name, tenant_id, region, config_json, metadata_json, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(name)
+        .bind(tenant_id)
+        .bind(&request.region)
+        .bind(&config_json)
+        .bind(&metadata_json)
+        .bind(&now_str)
+        .bind(&now_str)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| OmsError::Internal(format!("failed to insert store: {e}")))?;
+
+        if result.rows_affected() == 0 {
+            // Another request created it concurrently — fetch it
+            let row = sqlx::query("SELECT * FROM stores WHERE tenant_id = ? AND name = ?")
+                .bind(tenant_id)
+                .bind(name)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| {
+                    OmsError::Internal(format!("failed to fetch concurrent store: {e}"))
+                })?;
+            return self.row_to_store(&row);
+        }
+
+        Ok(MemoryStore {
+            id,
+            name: name.to_string(),
+            tenant_id: tenant_id.to_string(),
+            region: request.region,
+            config: request.config,
+            sovereignty: SovereigntyConfig::default(),
+            metadata: request.metadata,
+            created_at: now,
+            updated_at: now,
+        })
     }
 
     async fn update_store(
@@ -822,6 +1034,150 @@ impl OmsProvider for SqliteProvider {
             .await
             .map_err(|e| OmsError::Internal(format!("failed to begin transaction: {e}")))?;
 
+        // Upsert: if upsert_key is set, look for an existing entry to replace.
+        // Match on full normalized scope so that the same upsert_key in different
+        // scopes creates distinct entries.
+        if let Some(ref upsert_key) = request.upsert_key {
+            let existing: Option<sqlx::sqlite::SqliteRow> = sqlx::query(
+                "SELECT id, version, content_json, created_at FROM memories
+                 WHERE store_id = ? AND layer = ? AND upsert_key = ?
+                   AND scope_tenant_id = ?
+                   AND COALESCE(scope_org_id, '') = COALESCE(?, '')
+                   AND COALESCE(scope_team_id, '') = COALESCE(?, '')
+                   AND COALESCE(scope_project_id, '') = COALESCE(?, '')
+                   AND COALESCE(scope_user_id, '') = COALESCE(?, '')
+                   AND COALESCE(scope_agent_id, '') = COALESCE(?, '')
+                   AND COALESCE(scope_session_id, '') = COALESCE(?, '')
+                   AND COALESCE(scope_run_id, '') = COALESCE(?, '')
+                 LIMIT 1",
+            )
+            .bind(store_id.to_string())
+            .bind(&layer_str)
+            .bind(upsert_key)
+            .bind(&request.scope.tenant_id)
+            .bind(&request.scope.org_id)
+            .bind(&request.scope.team_id)
+            .bind(&request.scope.project_id)
+            .bind(&request.scope.user_id)
+            .bind(&request.scope.agent_id)
+            .bind(&request.scope.session_id)
+            .bind(&request.scope.run_id)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|e| OmsError::Internal(format!("failed to check upsert key: {e}")))?;
+
+            if let Some(row) = existing {
+                let existing_id_str: String = row.get("id");
+                let existing_id = Uuid::parse_str(&existing_id_str)
+                    .map_err(|e| OmsError::Internal(format!("invalid existing id: {e}")))?;
+                let existing_version: i64 = row.get("version");
+                let prev_content: String = row.get("content_json");
+                let original_created_at: String = row.get("created_at");
+                let new_version = existing_version + 1;
+
+                if let Err(e) = sqlx::query(
+                    "UPDATE memories SET
+                        content_json = ?, embedding = ?, tags_json = ?, categories_json = ?,
+                        source_json = ?, access_policy = ?, allowed_agents_json = ?,
+                        allowed_scopes_json = ?,
+                        scope_tenant_id = ?, scope_org_id = ?, scope_team_id = ?,
+                        scope_project_id = ?, scope_user_id = ?, scope_agent_id = ?,
+                        scope_session_id = ?, scope_run_id = ?,
+                        updated_at = ?, expires_at = ?,
+                        valid_from = ?, valid_until = ?, confidence = ?, entity_type = ?,
+                        owner_agent_id = ?, version = ?
+                     WHERE id = ?",
+                )
+                .bind(&content_json)
+                .bind(&embedding_blob)
+                .bind(&tags_json)
+                .bind(&categories_json)
+                .bind(&source_json)
+                .bind(access_policy)
+                .bind(&allowed_agents_json)
+                .bind(&allowed_scopes_json)
+                // Persist scope columns (ensures normalization changes are applied)
+                .bind(&request.scope.tenant_id)
+                .bind(&request.scope.org_id)
+                .bind(&request.scope.team_id)
+                .bind(&request.scope.project_id)
+                .bind(&request.scope.user_id)
+                .bind(&request.scope.agent_id)
+                .bind(&request.scope.session_id)
+                .bind(&request.scope.run_id)
+                .bind(&now_str)
+                .bind(&expires_str)
+                .bind(&valid_from_str)
+                .bind(&valid_until_str)
+                .bind(request.confidence)
+                .bind(&request.entity_type)
+                .bind(&request.owner_agent_id)
+                .bind(new_version)
+                .bind(&existing_id_str)
+                .execute(&mut *conn)
+                .await
+                {
+                    let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+                    return Err(OmsError::Internal(format!("failed to upsert memory: {e}")));
+                }
+
+                // Return DB-truth: use original created_at, not current time
+                let original_created = DateTime::parse_from_rfc3339(&original_created_at)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or(now);
+
+                let entry = MemoryEntry {
+                    id: existing_id,
+                    store_id,
+                    layer: request.layer,
+                    content: request.content,
+                    embedding: request.embedding,
+                    owner_agent_id: request.owner_agent_id,
+                    scope: request.scope,
+                    tags: request.tags,
+                    categories: request.categories,
+                    source: request.source,
+                    access_control: request.access_control,
+                    created_at: original_created,
+                    updated_at: now,
+                    expires_at: request.expires_at,
+                    immutable: request.immutable,
+                    version: new_version,
+                    valid_from: request.valid_from,
+                    valid_until: request.valid_until,
+                    confidence: request.confidence,
+                    entity_type: request.entity_type,
+                    upsert_key: request.upsert_key,
+                };
+
+                if let Err(e) = self
+                    .log_audit_on_conn(
+                        &mut conn,
+                        tenant_id,
+                        store_id,
+                        Some(entry.id),
+                        "upsert",
+                        Some(entry.owner_agent_id.as_str()),
+                        Some(serde_json::json!({
+                            "version": entry.version,
+                            "previous_content": prev_content,
+                        })),
+                    )
+                    .await
+                {
+                    let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+                    return Err(e);
+                }
+
+                sqlx::query("COMMIT")
+                    .execute(&mut *conn)
+                    .await
+                    .map_err(|e| OmsError::Internal(format!("failed to commit: {e}")))?;
+
+                return Ok(entry);
+            }
+        }
+
         if let Err(e) = sqlx::query(
             "INSERT INTO memories (
                 id, store_id, tenant_id, layer, content_json, embedding,
@@ -831,7 +1187,7 @@ impl OmsProvider for SqliteProvider {
                 tags_json, categories_json, source_json,
                 access_policy, allowed_agents_json, allowed_scopes_json,
                 created_at, updated_at, expires_at, immutable, version,
-                valid_from, valid_until, confidence, entity_type
+                valid_from, valid_until, confidence, entity_type, upsert_key
             ) VALUES (
                 ?, ?, ?, ?, ?, ?,
                 ?,
@@ -840,7 +1196,7 @@ impl OmsProvider for SqliteProvider {
                 ?, ?, ?,
                 ?, ?, ?,
                 ?, ?, ?, ?, 1,
-                ?, ?, ?, ?
+                ?, ?, ?, ?, ?
             )",
         )
         .bind(id.to_string())
@@ -872,6 +1228,7 @@ impl OmsProvider for SqliteProvider {
         .bind(&valid_until_str)
         .bind(request.confidence)
         .bind(&request.entity_type)
+        .bind(&request.upsert_key)
         .execute(&mut *conn)
         .await
         {
@@ -900,6 +1257,7 @@ impl OmsProvider for SqliteProvider {
             valid_until: request.valid_until,
             confidence: request.confidence,
             entity_type: request.entity_type,
+            upsert_key: request.upsert_key,
         };
 
         if let Err(e) = self
@@ -1414,9 +1772,11 @@ impl OmsProvider for SqliteProvider {
 
         let now_str = Utc::now().to_rfc3339();
 
-        let mut conn = self.pool.acquire().await.map_err(|e| {
-            OmsError::Internal(format!("failed to acquire connection: {e}"))
-        })?;
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| OmsError::Internal(format!("failed to acquire connection: {e}")))?;
 
         sqlx::query("BEGIN IMMEDIATE")
             .execute(&mut *conn)
@@ -1719,122 +2079,158 @@ impl OmsProvider for SqliteProvider {
             OmsError::Internal(format!("failed to query child memories for bubble up: {e}"))
         })?;
 
-        // Check which source memories have already been bubbled up to this parent
-        // by looking for existing memories with a source reference pointing back.
-        let mut already_bubbled = std::collections::HashSet::new();
-        {
-            let existing_sql =
-                "SELECT source_json FROM memories WHERE store_id = ? AND tenant_id = ? AND scope_agent_id = ? AND source_json IS NOT NULL";
-            let rows = sqlx::query(existing_sql)
-                .bind(store_id.to_string())
-                .bind(tenant_id)
-                .bind(&request.parent_agent_id)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| {
-                    OmsError::Internal(format!("failed to check existing bubbled memories: {e}"))
-                })?;
-            for row in &rows {
-                let source_str: Option<String> = row.get("source_json");
-                if let Some(json_str) = source_str {
-                    if let Ok(src) = serde_json::from_str::<SourceReference>(&json_str) {
-                        if let Some(ref uri) = src.uri {
-                            if let Some(ref_id) = uri.strip_prefix("bubble_up:") {
-                                if let Ok(uid) = Uuid::parse_str(ref_id) {
-                                    already_bubbled.insert(uid);
+        let mut created = Vec::new();
+
+        // Run all reads AND inserts under a single transaction for atomicity
+        // and to prevent concurrent duplicates.
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| OmsError::Internal(format!("failed to acquire connection: {e}")))?;
+
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| {
+                OmsError::Internal(format!("failed to begin bubble_up transaction: {e}"))
+            })?;
+
+        let result: Result<(), OmsError> = async {
+            // Check which source memories have already been bubbled up to this parent
+            // (inside the transaction to prevent concurrent duplicates).
+            let mut already_bubbled = std::collections::HashSet::new();
+            {
+                let existing_sql =
+                    "SELECT source_json FROM memories WHERE store_id = ? AND tenant_id = ? AND scope_agent_id = ? AND source_json IS NOT NULL";
+                let rows = sqlx::query(existing_sql)
+                    .bind(store_id.to_string())
+                    .bind(tenant_id)
+                    .bind(&request.parent_agent_id)
+                    .fetch_all(&mut *conn)
+                    .await
+                    .map_err(|e| {
+                        OmsError::Internal(format!("failed to check existing bubbled memories: {e}"))
+                    })?;
+                for row in &rows {
+                    let source_str: Option<String> = row.get("source_json");
+                    if let Some(json_str) = source_str {
+                        if let Ok(src) = serde_json::from_str::<SourceReference>(&json_str) {
+                            if let Some(ref uri) = src.uri {
+                                if let Some(ref_id) = uri.strip_prefix("bubble_up:") {
+                                    if let Ok(uid) = Uuid::parse_str(ref_id) {
+                                        already_bubbled.insert(uid);
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
-        }
 
-        let mut created = Vec::new();
-        for row in &source_rows {
-            let source = row_to_memory(row)?;
+            for row in &source_rows {
+                let source = row_to_memory(row)?;
 
-            // Skip if already bubbled up
-            if already_bubbled.contains(&source.id) {
-                continue;
+                if already_bubbled.contains(&source.id) {
+                    continue;
+                }
+
+                let mut parent_scope = source.scope.clone();
+                parent_scope.agent_id = Some(request.parent_agent_id.clone());
+                parent_scope.session_id = None;
+                parent_scope.run_id = None;
+
+                let memory = self
+                    .insert_memory_on_conn(
+                        &mut conn,
+                        tenant_id,
+                        store_id,
+                        CreateMemoryRequest {
+                            layer: source.layer,
+                            content: source.content,
+                            embedding: source.embedding,
+                            owner_agent_id: request.parent_agent_id.clone(),
+                            scope: parent_scope,
+                            tags: source.tags,
+                            categories: source.categories,
+                            source: Some(SourceReference {
+                                conversation_id: None,
+                                document_id: None,
+                                uri: Some(format!("bubble_up:{}", source.id)),
+                            }),
+                            access_control: source.access_control,
+                            expires_at: source.expires_at,
+                            immutable: source.immutable,
+                            valid_from: source.valid_from,
+                            valid_until: source.valid_until,
+                            confidence: source.confidence,
+                            entity_type: source.entity_type,
+                            upsert_key: source.upsert_key,
+                        },
+                    )
+                    .await?;
+                created.push(memory);
             }
 
-            let mut parent_scope = source.scope.clone();
-            parent_scope.agent_id = Some(request.parent_agent_id.clone());
-            parent_scope.session_id = None;
-            parent_scope.run_id = None;
-
-            let memory = self
-                .create_memory(
-                    tenant_id,
-                    store_id,
-                    CreateMemoryRequest {
-                        layer: source.layer,
-                        content: source.content,
-                        embedding: source.embedding,
-                        owner_agent_id: request.parent_agent_id.clone(),
-                        scope: parent_scope,
-                        tags: source.tags,
-                        categories: source.categories,
-                        source: Some(SourceReference {
-                            conversation_id: None,
-                            document_id: None,
-                            uri: Some(format!("bubble_up:{}", source.id)),
-                        }),
-                        access_control: source.access_control,
-                        expires_at: source.expires_at,
-                        immutable: source.immutable,
-                        valid_from: source.valid_from,
-                        valid_until: source.valid_until,
-                        confidence: source.confidence,
-                        entity_type: source.entity_type,
-                    },
-                )
-                .await?;
-            created.push(memory);
-        }
-
-        if let Some(summary) = request.summary {
-            let layer = requested_layers
-                .first()
-                .copied()
-                .unwrap_or(MemoryLayer::Working);
-            let summary_entry = self
-                .create_memory(
-                    tenant_id,
-                    store_id,
-                    CreateMemoryRequest {
-                        layer,
-                        content: summary,
-                        embedding: None,
-                        owner_agent_id: request.parent_agent_id.clone(),
-                        scope: MemoryScope {
-                            tenant_id: tenant_id.to_string(),
-                            org_id: None,
-                            team_id: None,
-                            project_id: None,
-                            user_id: None,
-                            agent_id: Some(request.parent_agent_id.clone()),
-                            session_id: None,
-                            run_id: None,
+            if let Some(summary) = request.summary {
+                let layer = requested_layers
+                    .first()
+                    .copied()
+                    .unwrap_or(MemoryLayer::Working);
+                let summary_entry = self
+                    .insert_memory_on_conn(
+                        &mut conn,
+                        tenant_id,
+                        store_id,
+                        CreateMemoryRequest {
+                            layer,
+                            content: summary,
+                            embedding: None,
+                            owner_agent_id: request.parent_agent_id.clone(),
+                            scope: MemoryScope {
+                                tenant_id: tenant_id.to_string(),
+                                org_id: None,
+                                team_id: None,
+                                project_id: None,
+                                user_id: None,
+                                agent_id: Some(request.parent_agent_id.clone()),
+                                session_id: None,
+                                run_id: None,
+                            },
+                            tags: vec!["bubble_up".into(), "summary".into()],
+                            categories: vec!["summary".into()],
+                            source: None,
+                            access_control: AccessControl::default(),
+                            expires_at: None,
+                            immutable: false,
+                            valid_from: None,
+                            valid_until: None,
+                            confidence: None,
+                            entity_type: None,
+                            upsert_key: None,
                         },
-                        tags: vec!["bubble_up".into(), "summary".into()],
-                        categories: vec!["summary".into()],
-                        source: None,
-                        access_control: AccessControl::default(),
-                        expires_at: None,
-                        immutable: false,
-                        valid_from: None,
-                        valid_until: None,
-                        confidence: None,
-                        entity_type: None,
-                    },
-                )
-                .await?;
-            created.push(summary_entry);
-        }
+                    )
+                    .await?;
+                created.push(summary_entry);
+            }
 
-        Ok(created)
+            Ok(())
+        }
+        .await;
+
+        match result {
+            Ok(()) => {
+                sqlx::query("COMMIT")
+                    .execute(&mut *conn)
+                    .await
+                    .map_err(|e| OmsError::Internal(format!("failed to commit bubble_up: {e}")))?;
+                Ok(created)
+            }
+            Err(e) => {
+                let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+                Err(e)
+            }
+        }
     }
 
     // --- Level 2: Shared Spaces ---
@@ -2308,11 +2704,13 @@ impl OmsProvider for SqliteProvider {
 
         // Anonymize audit log entries referencing purged memories (GDPR Art. 17).
         // We retain the audit entry for compliance proof but strip PII fields.
+        // The `redacted` flag signals that entry_hash will no longer match current
+        // row content, but the hash chain (prev_hash links) remains intact.
         if !purged_ids.is_empty() {
             for chunk in purged_ids.chunks(500) {
                 let placeholders: Vec<&str> = chunk.iter().map(|_| "?").collect();
                 let anon_sql = format!(
-                    "UPDATE audit_log SET agent_id = NULL, details_json = NULL \
+                    "UPDATE audit_log SET agent_id = NULL, details_json = NULL, redacted = 1 \
                      WHERE store_id = ? AND tenant_id = ? AND memory_id IN ({})",
                     placeholders.join(",")
                 );
@@ -2713,6 +3111,7 @@ mod tests {
             valid_until: None,
             confidence: None,
             entity_type: None,
+            upsert_key: None,
         }
     }
 
@@ -3837,5 +4236,177 @@ mod tests {
             store.sovereignty.mode,
             kd6_core::models::sovereignty::SovereigntyMode::Any
         );
+    }
+
+    #[tokio::test]
+    async fn upsert_same_key_same_scope_updates_in_place() {
+        let (provider, store) = setup_with_store().await;
+        let mut req = make_memory_request("agent-1");
+        req.upsert_key = Some("dedup-1".into());
+        req.content = serde_json::json!({"text": "first version"});
+
+        let first = provider
+            .create_memory("tenant-1", store.id, req.clone())
+            .await
+            .unwrap();
+        assert_eq!(first.version, 1);
+
+        // Second create with same key should upsert (update in place)
+        req.content = serde_json::json!({"text": "second version"});
+        let second = provider
+            .create_memory("tenant-1", store.id, req)
+            .await
+            .unwrap();
+
+        assert_eq!(second.id, first.id, "should reuse same ID");
+        assert_eq!(second.version, 2);
+        assert_eq!(
+            second.content,
+            serde_json::json!({"text": "second version"})
+        );
+        // created_at should be preserved from the original insert
+        assert_eq!(second.created_at, first.created_at);
+    }
+
+    #[tokio::test]
+    async fn upsert_same_key_different_scope_creates_distinct_entries() {
+        let (provider, store) = setup_with_store().await;
+        let mut req1 = make_memory_request("agent-1");
+        req1.upsert_key = Some("dedup-2".into());
+        req1.scope.user_id = Some("user-a".into());
+        req1.content = serde_json::json!({"text": "user A data"});
+
+        let mut req2 = make_memory_request("agent-1");
+        req2.upsert_key = Some("dedup-2".into());
+        req2.scope.user_id = Some("user-b".into());
+        req2.content = serde_json::json!({"text": "user B data"});
+
+        let entry_a = provider
+            .create_memory("tenant-1", store.id, req1)
+            .await
+            .unwrap();
+        let entry_b = provider
+            .create_memory("tenant-1", store.id, req2)
+            .await
+            .unwrap();
+
+        assert_ne!(
+            entry_a.id, entry_b.id,
+            "different scopes should create distinct entries"
+        );
+        assert_eq!(entry_a.scope.user_id, Some("user-a".into()));
+        assert_eq!(entry_b.scope.user_id, Some("user-b".into()));
+    }
+
+    #[tokio::test]
+    async fn upsert_persists_scope_columns() {
+        let (provider, store) = setup_with_store().await;
+        let mut req = make_memory_request("agent-1");
+        req.upsert_key = Some("scope-test".into());
+        req.scope.user_id = Some("user-x".into());
+        req.scope.team_id = Some("team-y".into());
+
+        provider
+            .create_memory("tenant-1", store.id, req.clone())
+            .await
+            .unwrap();
+
+        // Upsert with same scope
+        req.content = serde_json::json!({"text": "updated"});
+        let updated = provider
+            .create_memory("tenant-1", store.id, req)
+            .await
+            .unwrap();
+
+        // Fetch from DB to verify scope is actually persisted (not just request echo)
+        let fetched = provider
+            .get_memory("tenant-1", store.id, updated.id)
+            .await
+            .unwrap();
+        assert_eq!(fetched.scope.user_id, Some("user-x".into()));
+        assert_eq!(fetched.scope.team_id, Some("team-y".into()));
+        assert_eq!(fetched.content, serde_json::json!({"text": "updated"}));
+    }
+
+    #[tokio::test]
+    async fn gdpr_purge_sets_redacted_flag_on_audit_entries() {
+        let provider = test_provider().await;
+        let tenant = "t-gdpr-redact";
+        let store = provider
+            .create_store(
+                tenant,
+                CreateStoreRequest {
+                    name: "redact-store".into(),
+                    region: None,
+                    config: StoreConfig::default(),
+                    metadata: Default::default(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let mut req = make_memory_request("agent-1");
+        req.scope.tenant_id = tenant.into();
+        req.scope.user_id = Some("user-purge".into());
+        let entry = provider.create_memory(tenant, store.id, req).await.unwrap();
+
+        // There should be audit entries for the create
+        let audit_before = provider
+            .audit_log(
+                tenant,
+                store.id,
+                AuditFilter {
+                    memory_id: Some(entry.id),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(!audit_before.items.is_empty());
+        assert!(!audit_before.items[0].redacted);
+
+        // Purge user-purge's data
+        provider
+            .gdpr_purge(
+                tenant,
+                store.id,
+                kd6_core::models::MemoryScope {
+                    tenant_id: tenant.into(),
+                    user_id: Some("user-purge".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        // Audit entries for the purged memory should be redacted
+        let audit_after = provider
+            .audit_log(
+                tenant,
+                store.id,
+                AuditFilter {
+                    memory_id: Some(entry.id),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(!audit_after.items.is_empty());
+        for audit_entry in &audit_after.items {
+            if audit_entry.action != "gdpr_purge" {
+                assert!(
+                    audit_entry.redacted,
+                    "audit entry should be marked redacted"
+                );
+                assert!(
+                    audit_entry.agent_id.is_none(),
+                    "agent_id should be anonymized"
+                );
+                assert!(
+                    audit_entry.details.is_none(),
+                    "details should be anonymized"
+                );
+            }
+        }
     }
 }
