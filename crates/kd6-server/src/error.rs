@@ -27,6 +27,9 @@ impl IntoResponse for ApiError {
             OmsError::Unauthorized(ref msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
             OmsError::Forbidden(ref msg) => (StatusCode::FORBIDDEN, msg.clone()),
             OmsError::Conflict(ref msg) => (StatusCode::CONFLICT, msg.clone()),
+            OmsError::ConstraintViolation(ref msg) => {
+                (StatusCode::CONFLICT, format!("constraint violation: {msg}"))
+            }
             OmsError::Immutable(ref id) => (
                 StatusCode::CONFLICT,
                 format!("immutable entry cannot be modified: {id}"),

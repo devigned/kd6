@@ -6,7 +6,7 @@ use super::entry::MemoryLayer;
 use super::scope::MemoryScope;
 
 /// A shared memory space for peer agents (blackboard pattern).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SharedSpace {
     pub id: Uuid,
     pub name: String,
@@ -30,7 +30,7 @@ pub enum ConflictResolution {
     Crdt,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpaceParticipant {
     pub agent_id: String,
     pub access: ParticipantAccess,
@@ -46,7 +46,7 @@ pub enum ParticipantAccess {
 }
 
 /// Request to create a shared memory space.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateSharedSpaceRequest {
     pub name: String,
     pub scope: MemoryScope,
@@ -69,7 +69,7 @@ fn default_conflict_resolution() -> ConflictResolution {
 }
 
 /// Request to join or add an agent to a shared space.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JoinSpaceRequest {
     pub agent_id: String,
     #[serde(default = "default_participant_access")]
@@ -81,7 +81,7 @@ fn default_participant_access() -> ParticipantAccess {
 }
 
 /// Request to leave a shared space.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeaveSpaceRequest {
     pub agent_id: String,
 }

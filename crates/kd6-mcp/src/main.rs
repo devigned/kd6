@@ -76,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
             let service = server.serve(rmcp::transport::stdio()).await?;
             service.waiting().await?;
         }
-        _ => {
+        "http" => {
             let addr = std::env::var("KD6_MCP_ADDR").unwrap_or_else(|_| "0.0.0.0:8081".to_string());
 
             let service = StreamableHttpService::new(
@@ -95,6 +95,9 @@ async fn main() -> anyhow::Result<()> {
                     tokio::signal::ctrl_c().await.unwrap();
                 })
                 .await?;
+        }
+        other => {
+            anyhow::bail!("unknown KD6_MCP_TRANSPORT: {other}. Valid options: stdio, http");
         }
     }
 

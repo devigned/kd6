@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 /// **Important:** Providers must always override `scope.tenant_id` with the
 /// authenticated `tenant_id` from the request context before storage.
 /// Use [`MemoryScope::normalize`] to enforce this.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryScope {
     #[serde(default)]
     pub tenant_id: String,
@@ -33,5 +33,71 @@ impl MemoryScope {
     pub fn normalize(mut self, tenant_id: &str) -> Self {
         self.tenant_id = tenant_id.to_string();
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_overrides_tenant_id() {
+        let scope = MemoryScope {
+            tenant_id: "user-provided".into(),
+            org_id: Some("org-1".into()),
+            ..Default::default()
+        };
+        let normalized = scope.normalize("auth-tenant");
+        assert_eq!(normalized.tenant_id, "auth-tenant");
+        assert_eq!(normalized.org_id, Some("org-1".into()));
+    }
+
+    #[test]
+    fn normalize_sets_empty_tenant() {
+        let scope = MemoryScope::default();
+        assert_eq!(scope.tenant_id, "");
+        let normalized = scope.normalize("t1");
+        assert_eq!(normalized.tenant_id, "t1");
+    }
+
+    #[test]
+    fn default_scope_has_all_none_fields() {
+        let scope = MemoryScope::default();
+        assert_eq!(scope.tenant_id, "");
+        assert!(scope.org_id.is_none());
+        assert!(scope.team_id.is_none());
+        assert!(scope.project_id.is_none());
+        assert!(scope.user_id.is_none());
+        assert!(scope.agent_id.is_none());
+        assert!(scope.session_id.is_none());
+        assert!(scope.run_id.is_none());
+    }
+
+    #[test]
+    fn scope_serde_round_trip() {
+        let scope = MemoryScope {
+            tenant_id: "t1".into(),
+            org_id: Some("org".into()),
+            team_id: None,
+            project_id: Some("proj".into()),
+            user_id: None,
+            agent_id: Some("agent-1".into()),
+            session_id: None,
+            run_id: None,
+        };
+        let json = serde_json::to_string(&scope).unwrap();
+        let deserialized: MemoryScope = serde_json::from_str(&json).unwrap();
+        assert_eq!(scope, deserialized);
+    }
+
+    #[test]
+    fn scope_omits_none_fields_in_json() {
+        let scope = MemoryScope {
+            tenant_id: "t1".into(),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&scope).unwrap();
+        assert!(!json.contains("org_id"));
+        assert!(!json.contains("session_id"));
     }
 }
