@@ -4,6 +4,7 @@ use kd6_core::models::{CreateStoreRequest, MemoryStore, SovereigntyConfig, Updat
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
+use crate::audit::log_audit_on_conn;
 use crate::helpers::map_db_error;
 
 pub(crate) fn row_to_store(row: &sqlx::sqlite::SqliteRow) -> Result<MemoryStore, OmsError> {
@@ -50,7 +51,17 @@ pub(crate) async fn create_store(
     let metadata_json = serde_json::to_string(&request.metadata)
         .map_err(|e| OmsError::Internal(format!("failed to serialize metadata: {e}")))?;
 
-    sqlx::query(
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|e| OmsError::Internal(format!("failed to acquire connection: {e}")))?;
+
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| map_db_error("begin transaction", e))?;
+
+    if let Err(e) = sqlx::query(
         "INSERT INTO stores (id, name, tenant_id, region, config_json, metadata_json, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
@@ -62,9 +73,37 @@ pub(crate) async fn create_store(
     .bind(&metadata_json)
     .bind(&now_str)
     .bind(&now_str)
-    .execute(pool)
+    .execute(&mut *conn)
     .await
-    .map_err(|e| map_db_error("insert store", e))?;
+    {
+        let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+        return Err(map_db_error("insert store", e));
+    }
+
+    if let Err(e) = log_audit_on_conn(
+        pool,
+        &mut conn,
+        tenant_id,
+        id,
+        None,
+        "create_store",
+        None,
+        Some(serde_json::json!({
+            "entity": "store",
+            "store_id": id.to_string(),
+            "name": &request.name,
+        })),
+    )
+    .await
+    {
+        let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+        return Err(e);
+    }
+
+    sqlx::query("COMMIT")
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| map_db_error("commit transaction", e))?;
 
     Ok(MemoryStore {
         id,
@@ -192,7 +231,17 @@ pub(crate) async fn update_store(
     let metadata_json = serde_json::to_string(&metadata)
         .map_err(|e| OmsError::Internal(format!("failed to serialize metadata: {e}")))?;
 
-    sqlx::query(
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|e| OmsError::Internal(format!("failed to acquire connection: {e}")))?;
+
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| map_db_error("begin transaction", e))?;
+
+    let result = match sqlx::query(
         "UPDATE stores SET name = ?, config_json = ?, metadata_json = ?, updated_at = ?
          WHERE id = ? AND tenant_id = ?",
     )
@@ -202,9 +251,45 @@ pub(crate) async fn update_store(
     .bind(&now_str)
     .bind(store_id.to_string())
     .bind(tenant_id)
-    .execute(pool)
+    .execute(&mut *conn)
     .await
-    .map_err(|e| map_db_error("update store", e))?;
+    {
+        Ok(result) => result,
+        Err(e) => {
+            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+            return Err(map_db_error("update store", e));
+        }
+    };
+
+    if result.rows_affected() == 0 {
+        let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+        return Err(OmsError::StoreNotFound(store_id.to_string()));
+    }
+
+    if let Err(e) = log_audit_on_conn(
+        pool,
+        &mut conn,
+        tenant_id,
+        store_id,
+        None,
+        "update_store",
+        None,
+        Some(serde_json::json!({
+            "entity": "store",
+            "store_id": store_id.to_string(),
+            "name": &name,
+        })),
+    )
+    .await
+    {
+        let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+        return Err(e);
+    }
+
+    sqlx::query("COMMIT")
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| map_db_error("commit transaction", e))?;
 
     crate::stores::get_store(pool, tenant_id, store_id).await
 }

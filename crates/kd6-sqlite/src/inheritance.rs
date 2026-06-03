@@ -7,6 +7,7 @@ use kd6_core::models::{
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
+use crate::audit::log_audit_on_conn;
 use crate::helpers::{
     escape_like, inheritance_access_to_str, map_db_error, parse_inheritance_access,
 };
@@ -70,7 +71,17 @@ pub(crate) async fn create_inheritance(
         created_at: Utc::now(),
     };
 
-    sqlx::query(
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|e| OmsError::Internal(format!("failed to acquire connection: {e}")))?;
+
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| map_db_error("begin transaction", e))?;
+
+    if let Err(e) = sqlx::query(
         "INSERT INTO inheritance (id, store_id, tenant_id, parent_agent_id, child_agent_id, inherit_layers_json, filter_json, access, bubble_up_json, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
@@ -93,9 +104,38 @@ pub(crate) async fn create_inheritance(
             .map_err(|e| OmsError::Internal(format!("failed to serialize bubble_up config: {e}")))?,
     )
     .bind(inheritance.created_at.to_rfc3339())
-    .execute(pool)
+    .execute(&mut *conn)
     .await
-    .map_err(|e| map_db_error("create inheritance", e))?;
+    {
+        let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+        return Err(map_db_error("create inheritance", e));
+    }
+
+    if let Err(e) = log_audit_on_conn(
+        pool,
+        &mut conn,
+        tenant_id,
+        store_id,
+        None,
+        "create_inheritance",
+        Some(inheritance.child_agent_id.as_str()),
+        Some(serde_json::json!({
+            "entity": "inheritance",
+            "inheritance_id": inheritance.id.to_string(),
+            "parent_agent_id": &inheritance.parent_agent_id,
+            "child_agent_id": &inheritance.child_agent_id,
+        })),
+    )
+    .await
+    {
+        let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+        return Err(e);
+    }
+
+    sqlx::query("COMMIT")
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| map_db_error("commit transaction", e))?;
 
     Ok(inheritance)
 }

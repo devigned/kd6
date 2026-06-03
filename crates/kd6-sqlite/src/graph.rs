@@ -4,6 +4,7 @@ use kd6_core::models::{CreateEdgeRequest, GraphEdge, GraphTraversalRequest, Grap
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
+use crate::audit::log_audit_on_conn;
 use crate::helpers::map_db_error;
 
 use crate::memories::row_to_memory;
@@ -23,7 +24,17 @@ pub(crate) async fn create_edge(
     let metadata_json = serde_json::to_string(&request.metadata)
         .map_err(|e| OmsError::Internal(format!("failed to serialize edge metadata: {e}")))?;
 
-    sqlx::query(
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|e| OmsError::Internal(format!("failed to acquire connection: {e}")))?;
+
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| map_db_error("begin transaction", e))?;
+
+    if let Err(e) = sqlx::query(
         "INSERT INTO graph_edges (id, store_id, tenant_id, source_memory_id, target_memory_id, relation_type, weight, metadata_json, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
@@ -36,9 +47,39 @@ pub(crate) async fn create_edge(
     .bind(request.weight)
     .bind(&metadata_json)
     .bind(now.to_rfc3339())
-    .execute(pool)
+    .execute(&mut *conn)
     .await
-    .map_err(|e| map_db_error("insert graph edge", e))?;
+    {
+        let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+        return Err(map_db_error("insert graph edge", e));
+    }
+
+    if let Err(e) = log_audit_on_conn(
+        pool,
+        &mut conn,
+        tenant_id,
+        store_id,
+        None,
+        "create_edge",
+        None,
+        Some(serde_json::json!({
+            "entity": "graph_edge",
+            "edge_id": id.to_string(),
+            "source_memory_id": request.source_memory_id.to_string(),
+            "target_memory_id": request.target_memory_id.to_string(),
+            "relation_type": &request.relation_type,
+        })),
+    )
+    .await
+    {
+        let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+        return Err(e);
+    }
+
+    sqlx::query("COMMIT")
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| map_db_error("commit transaction", e))?;
 
     Ok(GraphEdge {
         id,
