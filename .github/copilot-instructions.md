@@ -14,8 +14,9 @@ Standard, Advanced).
 ## Build & Test
 
 ```bash
+make ci                              # Full CI pipeline (fmt, clippy, build, test)
 cargo build                          # Build
-cargo test                           # Run all tests (77 across 4 crates)
+cargo test                           # Run all tests (166 across 5 crates)
 cargo test <test_name>               # Run a single test by name
 cargo test -p kd6-sqlite             # Run tests for a specific crate
 cargo clippy -- -D warnings          # Lint (zero warnings required)
@@ -37,18 +38,23 @@ KD6_MCP_TRANSPORT=stdio cargo run -p kd6-mcp
 
 ```
 crates/
-├── kd6-core/      # Domain types, OmsError, OmsProvider trait (pure -- no I/O deps)
+├── kd6-core/      # Domain types, OmsError, OmsProvider trait (pure — no I/O deps)
+├── kd6-embed/     # Embedding providers: local (fastembed) + OpenAI-compatible HTTP
 ├── kd6-sqlite/    # SQLite SPI implementation (sqlx), migrations in migrations/
 ├── kd6-server/    # Axum HTTP server, route handlers, custom extractors
 └── kd6-mcp/       # MCP server (rmcp), 10 tools, Streamable HTTP + stdio transports
 ```
 
 - **kd6-core** is the shared contract. All other crates depend on it.
+- **kd6-embed** provides pluggable embedding providers (local fastembed-rs with
+  all-MiniLM-L6-v2, and an OpenAI-compatible HTTP client).
 - The `OmsProvider` trait (async, object-safe via `async_trait`) is the backend
   SPI. New backends implement this trait.
-- **kd6-server** depends on both `kd6-core` and `kd6-sqlite`.
-- **kd6-mcp** depends on both `kd6-core` and `kd6-sqlite`.
+- **kd6-server** depends on kd6-core, kd6-embed, and kd6-sqlite.
+- **kd6-mcp** depends on kd6-core, kd6-embed, and kd6-sqlite.
 - SQLite migrations live in `crates/kd6-sqlite/migrations/`.
+- The kd6-sqlite provider is split across 10 focused modules (helpers, stores,
+  memories, search, audit, graph, shared_spaces, inheritance, lifecycle, gdpr).
 
 ## Architecture
 

@@ -17,7 +17,8 @@ OMS defines:
 - A **memory model** with five layers (working, episodic, semantic, procedural,
   archival)
 - A **scope hierarchy** for multi-tenant, multi-agent isolation
-- A **REST API** for HTTP-based access
+- A **REST API** for HTTP-based access (using human-readable store names as
+  the primary identifier)
 - A **Service Provider Interface (SPI)** that backends implement
 - Three **conformance levels** with increasing capability requirements
 
@@ -27,8 +28,8 @@ OMS defines:
 
 The minimum viable memory service. Required capabilities:
 
-- Store CRUD (create, read, update, delete)
-- Memory CRUD with partial updates
+- Store CRUD (create, read, update, delete) with name-based routing
+- Memory CRUD with partial updates and upsert support
 - Vector search (semantic similarity)
 - Keyword search (full-text)
 - Tenant isolation
@@ -74,23 +75,24 @@ conformance matrix:
 
 | Feature | Level | Status |
 |---|---|---|
-| Store CRUD | 1 | Implemented |
-| Memory CRUD | 1 | Implemented |
-| Vector search (cosine) | 1 | Implemented |
-| Keyword search (FTS5) | 1 | Implemented |
-| Tenant isolation | 1 | Implemented |
-| Capabilities | 1 | Implemented |
-| Audit logging | 2 | Implemented |
-| TTL / lifecycle | 2 | Implemented |
-| Batch operations | 2 | Implemented |
-| Hierarchical scoping | 2 | Implemented |
-| Inheritance / bubble-up | 2 | Implemented |
-| Shared spaces | 2 | Implemented |
-| Graph memory | 3 | Implemented |
-| Temporal metadata | 3 | Implemented |
-| GDPR purge | 3 | Implemented |
-| Cryptographic audit | 3 | Implemented |
-| Data sovereignty | 3 | Implemented |
+| Store CRUD (name-based routing) | 1 | ✅ Implemented |
+| Memory CRUD (with upsert) | 1 | ✅ Implemented |
+| Vector search (cosine) | 1 | ✅ Implemented |
+| Keyword search (FTS5) | 1 | ✅ Implemented |
+| Tenant isolation | 1 | ✅ Implemented |
+| Capabilities | 1 | ✅ Implemented |
+| Server-side embedding | 1 | ✅ Implemented |
+| Audit logging | 2 | ✅ Implemented |
+| TTL / lifecycle | 2 | ✅ Implemented |
+| Batch operations | 2 | ✅ Implemented |
+| Hierarchical scoping | 2 | ✅ Implemented |
+| Inheritance / bubble-up | 2 | ✅ Implemented |
+| Shared spaces | 2 | ✅ Implemented |
+| Graph memory | 3 | ✅ Implemented |
+| Temporal metadata | 3 | ✅ Implemented |
+| GDPR purge | 3 | ✅ Implemented |
+| Cryptographic audit | 3 | ✅ Implemented |
+| Data sovereignty | 3 | ✅ Implemented |
 
 ## The Memory Model
 
@@ -133,7 +135,7 @@ Each memory entry contains:
 | `store_id` | UUID | Parent store |
 | `layer` | enum | One of the five memory layers |
 | `content` | JSON | Arbitrary structured content |
-| `embedding` | float[] | Optional vector embedding |
+| `embedding` | float[] | Optional vector embedding (auto-computed if provider configured) |
 | `owner_agent_id` | string | Agent that created this memory |
 | `scope` | object | Hierarchical visibility scope |
 | `tags` | string[] | Freeform labels |
@@ -145,8 +147,9 @@ Each memory entry contains:
 | `version` | int | Optimistic concurrency counter |
 | `valid_from` | timestamp | Temporal: when this became true |
 | `valid_until` | timestamp | Temporal: when this stops being true |
-| `confidence` | float | Temporal: certainty score (0.0-1.0) |
+| `confidence` | float | Temporal: certainty score (0.0–1.0) |
 | `entity_type` | string | Graph: type for graph node classification |
+| `upsert_key` | string | Upsert: unique key for create-or-replace semantics |
 
 ## The SPI
 
@@ -158,10 +161,12 @@ the backend exclusively through this interface.
 ```rust
 #[async_trait]
 pub trait OmsProvider: Send + Sync {
-    // Store management (5 methods)
+    // Store management (7 methods)
     async fn create_store(...) -> Result<MemoryStore, OmsError>;
     async fn get_store(...) -> Result<MemoryStore, OmsError>;
+    async fn get_store_by_name(...) -> Result<MemoryStore, OmsError>;
     async fn list_stores(...) -> Result<Vec<MemoryStore>, OmsError>;
+    async fn get_or_create_store(...) -> Result<MemoryStore, OmsError>;
     async fn update_store(...) -> Result<MemoryStore, OmsError>;
     async fn delete_store(...) -> Result<(), OmsError>;
 

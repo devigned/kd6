@@ -2,79 +2,121 @@
 
 ## Prerequisites
 
-- Rust 1.75 or later (2021 edition)
-- SQLite 3.35+ (for FTS5 and other features; included in most OS distributions)
+- Rust 1.75 or later
+- SQLite 3.35+ with FTS5 support available on your system
+- `curl` for the HTTP examples
+- An MCP-capable client if you want to use KD6 through MCP
 
-## Building from Source
+## Building
 
 ```bash
 git clone https://github.com/devigned/kd6.git
 cd kd6
+
+# Primary validation command: format check, clippy, build, and tests
+make ci
+
+# Build release binaries
 cargo build --release
 ```
 
-This produces two binaries in `target/release/`:
+This produces the server binaries in `target/release/`:
 
-- `kd6-server` -- HTTP API server
-- `kd6-mcp` -- MCP server (Streamable HTTP by default, stdio optional)
+- `kd6-server` — HTTP API server
+- `kd6-mcp` — MCP server
 
-## Running the HTTP Server
+## Running HTTP Server
 
 ```bash
-# Start with defaults (SQLite file at ./kd6.db, listen on 0.0.0.0:8080)
-cargo run --release --bin kd6-server
+# Start with defaults
+cargo run --release -p kd6-server
 
-# Or with custom configuration
-KD6_DATABASE_URL="sqlite:data/memories.db?mode=rwc" \
+# Custom database and listen address
+KD6_DATABASE_URL="sqlite:data/kd6.db?mode=rwc" \
 LISTEN_ADDR="127.0.0.1:3000" \
 RUST_LOG="info" \
-cargo run --release --bin kd6-server
+cargo run --release -p kd6-server
 ```
 
-### Environment Variables
+Database migrations run automatically at startup.
+
+### Environment variables
 
 | Variable | Default | Description |
 |---|---|---|
-| `KD6_DATABASE_URL` | `sqlite:kd6.db?mode=rwc` | SQLite connection URL. The `?mode=rwc` flag creates the file if it does not exist. |
-| `LISTEN_ADDR` | `0.0.0.0:8080` | Address and port for the HTTP server. |
-| `KD6_MCP_TRANSPORT` | `http` | MCP transport mode: `http` (Streamable HTTP) or `stdio`. |
-| `KD6_MCP_ADDR` | `0.0.0.0:8081` | Address and port for the MCP HTTP server. |
-| `RUST_LOG` | `info` | Log level filter. Supports `trace`, `debug`, `info`, `warn`, `error`. |
+| `KD6_DATABASE_URL` | `sqlite:kd6.db?mode=rwc` | SQLite connection URL |
+| `LISTEN_ADDR` | `0.0.0.0:8080` | HTTP server address |
+| `KD6_MCP_TRANSPORT` | `http` | MCP transport: `http` or `stdio` |
+| `KD6_MCP_ADDR` | `0.0.0.0:8081` | MCP HTTP server address |
+| `KD6_EMBEDDING_PROVIDER` | `local` | Embedding provider |
+| `KD6_EMBEDDING_ENDPOINT` | — | OpenAI-compatible endpoint |
+| `KD6_EMBEDDING_MODEL` | — | Model name |
+| `KD6_EMBEDDING_API_KEY` | — | API key |
+| `KD6_EMBEDDING_DIMENSIONS` | — | Dimension override |
+| `RUST_LOG` | `info` | Log level |
 
-Database migrations run automatically on startup. No manual setup is needed.
+### Embedding providers
 
-## Running the MCP Server
+KD6 can embed memory content and search queries automatically.
 
-The MCP server supports two transport modes: HTTP (default) and stdio.
+- `KD6_EMBEDDING_PROVIDER=local` — default. Uses `fastembed-rs` with `all-MiniLM-L6-v2` and 384-dimensional vectors.
+- `KD6_EMBEDDING_PROVIDER=openai-compatible` — requires `KD6_EMBEDDING_ENDPOINT` and `KD6_EMBEDDING_MODEL`; optionally accepts `KD6_EMBEDDING_API_KEY` and `KD6_EMBEDDING_DIMENSIONS`.
+- `KD6_EMBEDDING_PROVIDER=none` — disables auto-embedding. Callers must provide `embedding` values on writes and vector searches.
 
-### HTTP mode (default)
+Examples:
 
 ```bash
-cargo run --release --bin kd6-mcp
+# Local embeddings (default)
+KD6_EMBEDDING_PROVIDER=local cargo run --release -p kd6-server
+
+# OpenAI-compatible embeddings
+KD6_EMBEDDING_PROVIDER=openai-compatible \
+KD6_EMBEDDING_ENDPOINT="https://api.openai.com/v1/embeddings" \
+KD6_EMBEDDING_MODEL="text-embedding-3-small" \
+KD6_EMBEDDING_API_KEY="your-api-key" \
+cargo run --release -p kd6-server
+
+# No auto-embedding
+KD6_EMBEDDING_PROVIDER=none cargo run --release -p kd6-server
 ```
 
-This starts a Streamable HTTP MCP server on port 8081. Clients connect to
-`http://localhost:8081/mcp`.
+### Auto-provisioning and defaults
+
+KD6 supports a zero-setup path for development and simple local use:
+
+- If `X-Tenant-Id` is absent, KD6 uses the `_default` tenant.
+- If you write to `/v1/stores/_default/...`, KD6 auto-creates the `_default` store on first write.
+- Store names are chosen when a store is created, are immutable, and are the primary identifier in all store-scoped URLs.
+
+If you want strict behavior, you can disable these conveniences with `KD6_DEFAULT_TENANT=false` and `KD6_AUTO_PROVISION=false`.
+
+## Running MCP Server
+
+KD6 MCP supports Streamable HTTP and stdio transports.
+
+### HTTP mode
 
 ```bash
-# Custom address
-KD6_MCP_ADDR="127.0.0.1:9090" cargo run --release --bin kd6-mcp
+cargo run --release -p kd6-mcp
+```
+
+This starts the MCP endpoint at `http://localhost:8081/mcp`.
+
+```bash
+KD6_MCP_ADDR="127.0.0.1:9090" cargo run --release -p kd6-mcp
 ```
 
 ### Stdio mode
 
-For local agent frameworks that launch MCP servers as child processes:
-
 ```bash
-KD6_MCP_TRANSPORT=stdio cargo run --release --bin kd6-mcp
+KD6_MCP_TRANSPORT=stdio cargo run --release -p kd6-mcp
 ```
 
-Logs go to stderr to keep stdout clean for MCP protocol messages.
+Logs are written to stderr so stdout remains clean for MCP traffic.
 
-### MCP Client Configuration
+## MCP Client Config
 
-To register KD6 as an MCP server in Claude Desktop using HTTP mode, add this to
-your `claude_desktop_config.json`:
+### Claude Desktop over HTTP
 
 ```json
 {
@@ -86,16 +128,17 @@ your `claude_desktop_config.json`:
 }
 ```
 
-For stdio mode:
+### Claude Desktop over stdio
 
 ```json
 {
   "mcpServers": {
     "kd6": {
-      "command": "/path/to/kd6-mcp",
+      "command": "/absolute/path/to/kd6-mcp",
       "env": {
-        "KD6_DATABASE_URL": "sqlite:/path/to/kd6.db?mode=rwc",
-        "KD6_MCP_TRANSPORT": "stdio"
+        "KD6_DATABASE_URL": "sqlite:/absolute/path/to/kd6.db?mode=rwc",
+        "KD6_MCP_TRANSPORT": "stdio",
+        "KD6_EMBEDDING_PROVIDER": "local"
       }
     }
   }
@@ -104,29 +147,46 @@ For stdio mode:
 
 ## HTTP API Walkthrough
 
-All API requests require a `X-Tenant-Id` header for tenant isolation. Many
-endpoints also accept an `X-Agent-Id` header for audit attribution.
+### Routing and headers
 
-### Health Check
+All store-scoped endpoints use a store name in the path, not a UUID.
+
+- Old style: `/v1/stores/{store_id}/memories`
+- Current style: `/v1/stores/my-store/memories`
+
+Request headers:
+
+- `X-Tenant-Id` — optional. If omitted, KD6 uses `_default`.
+- `X-Agent-Id` — optional, used for audit attribution.
+
+### Health check
 
 ```bash
 curl http://localhost:8080/health
 ```
 
-```json
-{ "status": "ok" }
-```
-
-### Provider Capabilities
+### Capabilities
 
 ```bash
 curl http://localhost:8080/capabilities
 ```
 
-Returns the feature set of the running backend, including supported layers,
-search modes, and batch limits.
+### Zero-setup write with `_default`
 
-### Create a Store
+This works even with no prior store creation when auto-provisioning is enabled:
+
+```bash
+curl -X POST http://localhost:8080/v1/stores/_default/memories \
+  -H "Content-Type: application/json" \
+  -d '{
+    "layer": "working",
+    "content": {"text": "Local scratch memory"},
+    "owner_agent_id": "demo-agent",
+    "scope": {}
+  }'
+```
+
+### Create a named store
 
 ```bash
 curl -X POST http://localhost:8080/v1/stores \
@@ -140,10 +200,12 @@ curl -X POST http://localhost:8080/v1/stores \
   }'
 ```
 
-### Create a Memory
+Use `project-alpha` directly in all subsequent URLs.
+
+### Create a memory
 
 ```bash
-curl -X POST http://localhost:8080/v1/stores/{store_id}/memories \
+curl -X POST http://localhost:8080/v1/stores/project-alpha/memories \
   -H "Content-Type: application/json" \
   -H "X-Tenant-Id: acme-corp" \
   -H "X-Agent-Id: code-reviewer" \
@@ -152,47 +214,59 @@ curl -X POST http://localhost:8080/v1/stores/{store_id}/memories \
     "content": {"text": "The auth module uses bcrypt with cost factor 12"},
     "owner_agent_id": "code-reviewer",
     "scope": {},
-    "tags": ["auth", "security"]
+    "tags": ["auth", "security"],
+    "upsert_key": "fact:auth:bcrypt"
   }'
 ```
 
-### Search Memories
+`upsert_key` enables atomic create-or-replace within the same store, layer, and scope.
 
-KD6 supports keyword search (FTS5) and vector search (cosine similarity).
+When auto-embedding is enabled, KD6 computes embeddings from `content` if `embedding` is omitted.
 
-**Keyword search:**
+### Get a memory
 
 ```bash
-curl -X POST http://localhost:8080/v1/stores/{store_id}/search \
+curl http://localhost:8080/v1/stores/project-alpha/memories/{memory_id} \
+  -H "X-Tenant-Id: acme-corp"
+```
+
+### Search memories
+
+The request field is `query`, not `text`. Use `top_k` to limit results.
+
+#### Keyword search
+
+```bash
+curl -X POST http://localhost:8080/v1/stores/project-alpha/search \
   -H "Content-Type: application/json" \
   -H "X-Tenant-Id: acme-corp" \
   -d '{
-    "text": "authentication bcrypt",
+    "query": "authentication bcrypt",
     "keyword": true,
-    "limit": 10
+    "top_k": 10
   }'
 ```
 
-**Vector search** (requires embeddings to be stored on memories):
+#### Vector search
 
 ```bash
-curl -X POST http://localhost:8080/v1/stores/{store_id}/search \
+curl -X POST http://localhost:8080/v1/stores/project-alpha/search \
   -H "Content-Type: application/json" \
   -H "X-Tenant-Id: acme-corp" \
   -d '{
-    "embedding": [0.1, 0.2, 0.3, ...],
+    "query": "password hashing approach",
+    "embedding": [0.1, 0.2, 0.3],
     "keyword": false,
-    "limit": 5
+    "top_k": 5
   }'
 ```
 
-### Update a Memory
+If `embedding` is omitted and the embedding provider is `local` or `openai-compatible`, KD6 embeds the `query` automatically. If `KD6_EMBEDDING_PROVIDER=none`, callers must provide the query embedding themselves.
 
-Partial updates are supported. Only include the fields you want to change.
-To clear a nullable field (like `expires_at`), set it to `null` explicitly.
+### Update a memory
 
 ```bash
-curl -X PATCH http://localhost:8080/v1/stores/{store_id}/memories/{memory_id} \
+curl -X PATCH http://localhost:8080/v1/stores/project-alpha/memories/{memory_id} \
   -H "Content-Type: application/json" \
   -H "X-Tenant-Id: acme-corp" \
   -d '{
@@ -201,39 +275,17 @@ curl -X PATCH http://localhost:8080/v1/stores/{store_id}/memories/{memory_id} \
   }'
 ```
 
-### Graph Operations
-
-Create relationships between memories and traverse the graph:
+### Delete a memory
 
 ```bash
-# Create an edge
-curl -X POST http://localhost:8080/v1/stores/{store_id}/graph/edges \
-  -H "Content-Type: application/json" \
-  -H "X-Tenant-Id: acme-corp" \
-  -d '{
-    "source_memory_id": "...",
-    "target_memory_id": "...",
-    "relation_type": "depends_on",
-    "weight": 1.0
-  }'
-
-# Traverse from a starting memory
-curl -X POST http://localhost:8080/v1/stores/{store_id}/graph/traverse \
-  -H "Content-Type: application/json" \
-  -H "X-Tenant-Id: acme-corp" \
-  -d '{
-    "start_memory_id": "...",
-    "depth": 3,
-    "relation_types": ["depends_on", "related_to"]
-  }'
+curl -X DELETE http://localhost:8080/v1/stores/project-alpha/memories/{memory_id} \
+  -H "X-Tenant-Id: acme-corp"
 ```
 
-### Batch Operations
-
-Create or delete multiple memories in a single request:
+### Batch create
 
 ```bash
-curl -X POST http://localhost:8080/v1/stores/{store_id}/memories/batch \
+curl -X POST http://localhost:8080/v1/stores/project-alpha/memories/batch \
   -H "Content-Type: application/json" \
   -H "X-Tenant-Id: acme-corp" \
   -d '{
@@ -254,26 +306,52 @@ curl -X POST http://localhost:8080/v1/stores/{store_id}/memories/batch \
   }'
 ```
 
-### Audit Log
-
-View the audit trail for a store or a specific memory:
+### Graph operations
 
 ```bash
-# Store-level audit
-curl "http://localhost:8080/v1/stores/{store_id}/audit?limit=20" \
-  -H "X-Tenant-Id: acme-corp"
+# Create an edge
+curl -X POST http://localhost:8080/v1/stores/project-alpha/graph/edges \
+  -H "Content-Type: application/json" \
+  -H "X-Tenant-Id: acme-corp" \
+  -d '{
+    "source_memory_id": "11111111-1111-1111-1111-111111111111",
+    "target_memory_id": "22222222-2222-2222-2222-222222222222",
+    "relation_type": "depends_on",
+    "weight": 1.0
+  }'
 
-# Memory-level audit
-curl "http://localhost:8080/v1/stores/{store_id}/memories/{memory_id}/audit" \
+# Traverse the graph
+curl -X POST http://localhost:8080/v1/stores/project-alpha/graph/traverse \
+  -H "Content-Type: application/json" \
+  -H "X-Tenant-Id: acme-corp" \
+  -d '{
+    "start_memory_id": "11111111-1111-1111-1111-111111111111",
+    "depth": 3,
+    "relation_types": ["depends_on", "related_to"]
+  }'
+```
+
+### Store statistics
+
+```bash
+curl http://localhost:8080/v1/stores/project-alpha/lifecycle/stats \
   -H "X-Tenant-Id: acme-corp"
 ```
 
-### GDPR Purge
-
-Remove all memories matching a scope and anonymize associated audit entries:
+### Audit log
 
 ```bash
-curl -X POST http://localhost:8080/v1/stores/{store_id}/gdpr/purge \
+curl "http://localhost:8080/v1/stores/project-alpha/audit?limit=20" \
+  -H "X-Tenant-Id: acme-corp"
+
+curl "http://localhost:8080/v1/stores/project-alpha/memories/{memory_id}/audit" \
+  -H "X-Tenant-Id: acme-corp"
+```
+
+### GDPR purge
+
+```bash
+curl -X POST http://localhost:8080/v1/stores/project-alpha/gdpr/purge \
   -H "Content-Type: application/json" \
   -H "X-Tenant-Id: acme-corp" \
   -d '{
@@ -281,46 +359,40 @@ curl -X POST http://localhost:8080/v1/stores/{store_id}/gdpr/purge \
   }'
 ```
 
-The purge requires at least one scope field beyond `tenant_id` to prevent
-accidental deletion of all tenant data.
+The purge request must include at least one scope field beyond `tenant_id`.
 
 ## MCP Tools Reference
 
-When using KD6 through MCP, the following tools are available:
+KD6 MCP exposes 10 tools:
 
 | Tool | Description |
 |---|---|
-| `create_store` | Create a new memory store for a tenant |
-| `list_stores` | List all stores for a tenant |
-| `create_memory` | Store a new memory entry |
-| `get_memory` | Retrieve a specific memory by ID |
-| `search_memories` | Search with keywords or vectors |
-| `delete_memory` | Delete a memory entry |
-| `create_edge` | Create a graph edge between memories |
-| `traverse_graph` | Walk the knowledge graph from a starting node |
-| `gdpr_purge` | Purge memories by scope and anonymize audit data |
+| `create_store` | Create a store by name for a tenant |
+| `list_stores` | List stores visible to a tenant |
+| `create_memory` | Create a memory in a named store, with optional `upsert_key` |
+| `get_memory` | Fetch a memory by ID from a named store |
+| `search_memories` | Search a named store with `query`, optional `embedding`, and `top_k` |
+| `delete_memory` | Delete a memory by ID from a named store |
+| `create_edge` | Create a graph edge between two memories |
+| `traverse_graph` | Traverse the memory graph from a starting memory |
+| `store_stats` | Return lifecycle and storage statistics for a named store |
+| `gdpr_purge` | Purge scoped data and anonymize related audit entries |
 
-Each tool accepts a `tenant_id` parameter for isolation. The MCP server
-defaults to keyword search when the `keyword` parameter is not specified, since
-MCP clients typically do not have access to embedding models.
+MCP requests identify stores by `store_name`, not UUID. Tool calls include `tenant_id` for isolation.
 
 ## Development
 
+KD6 currently has 166 tests across 5 crates.
+
 ```bash
-# Run all tests
+# Primary local validation command
+make ci
+
+# Individual commands
+cargo fmt -- --check
+cargo clippy --all-targets -- -D warnings
+cargo build --all-targets
 cargo test
-
-# Run tests for a specific crate
-cargo test -p kd6-sqlite
-
-# Run a single test by name
-cargo test test_create_memory
-
-# Lint
-cargo clippy -- -D warnings
-
-# Format
-cargo fmt
 ```
 
-Tests use in-memory SQLite (`sqlite::memory:`) and require no external setup.
+Tests use in-memory SQLite and require no external setup.
