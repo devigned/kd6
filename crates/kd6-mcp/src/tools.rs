@@ -12,6 +12,7 @@ use kd6_core::models::{
     GraphTraversalRequest, MemoryLayer, MemoryScope, SearchQuery, StoreConfig,
 };
 use kd6_core::OmsProvider;
+use uuid::Uuid;
 
 /// KD6 MCP Server — exposes OMS memory operations as MCP tools.
 #[derive(Clone)]
@@ -34,6 +35,15 @@ impl Kd6McpServer {
     /// Return the list of registered MCP tools (useful for testing/introspection).
     pub fn list_tools(&self) -> Vec<rmcp::model::Tool> {
         self.tool_router.list_all()
+    }
+
+    /// Resolve a store name to its UUID via the provider.
+    async fn resolve_store(&self, tenant_id: &str, store_name: &str) -> Result<Uuid, String> {
+        self.provider
+            .get_store_by_name(tenant_id, store_name)
+            .await
+            .map(|s| s.id)
+            .map_err(|e| format!("store '{store_name}' not found: {e}"))
     }
 }
 
@@ -65,9 +75,9 @@ pub struct CreateMemoryParams {
     /// Tenant identifier.
     #[serde(default)]
     pub tenant_id: String,
-    /// Store ID to create the memory in.
+    /// Store name to create the memory in.
     #[serde(default)]
-    pub store_id: String,
+    pub store_name: String,
     /// Memory layer: working, episodic, semantic, procedural, or archival.
     #[serde(default = "default_layer_str")]
     pub layer: String,
@@ -103,8 +113,8 @@ fn default_layer_str() -> String {
 pub struct GetMemoryParams {
     /// Tenant identifier.
     pub tenant_id: String,
-    /// Store ID.
-    pub store_id: String,
+    /// Store name.
+    pub store_name: String,
     /// Memory entry ID.
     pub memory_id: String,
 }
@@ -113,8 +123,8 @@ pub struct GetMemoryParams {
 pub struct SearchMemoriesParams {
     /// Tenant identifier.
     pub tenant_id: String,
-    /// Store ID to search within.
-    pub store_id: String,
+    /// Store name to search within.
+    pub store_name: String,
     /// Natural language search query.
     pub query: String,
     /// Maximum number of results (default: 10).
@@ -137,8 +147,8 @@ fn default_keyword() -> bool {
 pub struct DeleteMemoryParams {
     /// Tenant identifier.
     pub tenant_id: String,
-    /// Store ID.
-    pub store_id: String,
+    /// Store name.
+    pub store_name: String,
     /// Memory entry ID to delete.
     pub memory_id: String,
 }
@@ -147,8 +157,8 @@ pub struct DeleteMemoryParams {
 pub struct CreateEdgeParams {
     /// Tenant identifier.
     pub tenant_id: String,
-    /// Store ID.
-    pub store_id: String,
+    /// Store name.
+    pub store_name: String,
     /// Source memory ID.
     pub source_memory_id: String,
     /// Target memory ID.
@@ -168,8 +178,8 @@ fn default_weight() -> f64 {
 pub struct GraphTraverseParams {
     /// Tenant identifier.
     pub tenant_id: String,
-    /// Store ID.
-    pub store_id: String,
+    /// Store name.
+    pub store_name: String,
     /// Starting memory ID for traversal.
     pub start_memory_id: String,
     /// Traversal depth (default: 2).
@@ -188,16 +198,16 @@ fn default_depth() -> u32 {
 pub struct StoreStatsParams {
     /// Tenant identifier.
     pub tenant_id: String,
-    /// Store ID.
-    pub store_id: String,
+    /// Store name.
+    pub store_name: String,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct GdprPurgeParams {
     /// Tenant identifier.
     pub tenant_id: String,
-    /// Store ID.
-    pub store_id: String,
+    /// Store name.
+    pub store_name: String,
     /// Scope to purge. All memories matching this scope will be permanently deleted
     /// and associated audit entries will be anonymized.
     #[serde(default)]
@@ -313,7 +323,7 @@ impl Kd6McpServer {
         if let Err(e) = validate_tenant_id(&p.tenant_id) {
             return err_json(e);
         }
-        let store_id = match parse_uuid(&p.store_id) {
+        let store_id = match self.resolve_store(&p.tenant_id, &p.store_name).await {
             Ok(id) => id,
             Err(e) => return err_json(e),
         };
@@ -384,7 +394,7 @@ impl Kd6McpServer {
         if let Err(e) = validate_tenant_id(&p.tenant_id) {
             return err_json(e);
         }
-        let store_id = match parse_uuid(&p.store_id) {
+        let store_id = match self.resolve_store(&p.tenant_id, &p.store_name).await {
             Ok(id) => id,
             Err(e) => return err_json(e),
         };
@@ -408,7 +418,7 @@ impl Kd6McpServer {
         if let Err(e) = validate_tenant_id(&p.tenant_id) {
             return err_json(e);
         }
-        let store_id = match parse_uuid(&p.store_id) {
+        let store_id = match self.resolve_store(&p.tenant_id, &p.store_name).await {
             Ok(id) => id,
             Err(e) => return err_json(e),
         };
@@ -441,7 +451,7 @@ impl Kd6McpServer {
         if let Err(e) = validate_tenant_id(&p.tenant_id) {
             return err_json(e);
         }
-        let store_id = match parse_uuid(&p.store_id) {
+        let store_id = match self.resolve_store(&p.tenant_id, &p.store_name).await {
             Ok(id) => id,
             Err(e) => return err_json(e),
         };
@@ -465,7 +475,7 @@ impl Kd6McpServer {
         if let Err(e) = validate_tenant_id(&p.tenant_id) {
             return err_json(e);
         }
-        let store_id = match parse_uuid(&p.store_id) {
+        let store_id = match self.resolve_store(&p.tenant_id, &p.store_name).await {
             Ok(id) => id,
             Err(e) => return err_json(e),
         };
@@ -504,7 +514,7 @@ impl Kd6McpServer {
         if let Err(e) = validate_tenant_id(&p.tenant_id) {
             return err_json(e);
         }
-        let store_id = match parse_uuid(&p.store_id) {
+        let store_id = match self.resolve_store(&p.tenant_id, &p.store_name).await {
             Ok(id) => id,
             Err(e) => return err_json(e),
         };
@@ -534,7 +544,7 @@ impl Kd6McpServer {
         if let Err(e) = validate_tenant_id(&p.tenant_id) {
             return err_json(e);
         }
-        let store_id = match parse_uuid(&p.store_id) {
+        let store_id = match self.resolve_store(&p.tenant_id, &p.store_name).await {
             Ok(id) => id,
             Err(e) => return err_json(e),
         };
@@ -552,7 +562,7 @@ impl Kd6McpServer {
         if let Err(e) = validate_tenant_id(&p.tenant_id) {
             return err_json(e);
         }
-        let store_id = match parse_uuid(&p.store_id) {
+        let store_id = match self.resolve_store(&p.tenant_id, &p.store_name).await {
             Ok(id) => id,
             Err(e) => return err_json(e),
         };

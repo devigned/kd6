@@ -39,14 +39,14 @@ async fn create_store(server: &Kd6McpServer, tenant_id: &str, name: &str) -> Val
 async fn create_memory(
     server: &Kd6McpServer,
     tenant_id: &str,
-    store_id: &str,
+    store_name: &str,
     content: &str,
 ) -> Value {
     parse_response(
         server
             .create_memory(Parameters(CreateMemoryParams {
                 tenant_id: tenant_id.to_string(),
-                store_id: store_id.to_string(),
+                store_name: store_name.to_string(),
                 layer: "working".to_string(),
                 content: json!(content),
                 owner_agent_id: "agent-1".to_string(),
@@ -100,12 +100,12 @@ async fn list_stores_reflects_created_store() {
 async fn create_memory_returns_created_entry() {
     let server = test_server().await;
     let store = create_store(&server, TENANT_ID, "test-store").await;
-    let store_id = store["data"]["id"].as_str().unwrap();
+    let store_name = store["data"]["name"].as_str().unwrap();
 
-    let response = create_memory(&server, TENANT_ID, store_id, "remember this").await;
+    let response = create_memory(&server, TENANT_ID, store_name, "remember this").await;
 
     assert_eq!(response["success"], json!(true));
-    assert_eq!(response["data"]["store_id"], json!(store_id));
+    assert!(response["data"]["store_id"].is_string());
     assert_eq!(response["data"]["content"], json!("remember this"));
 }
 
@@ -113,15 +113,15 @@ async fn create_memory_returns_created_entry() {
 async fn get_memory_returns_created_entry() {
     let server = test_server().await;
     let store = create_store(&server, TENANT_ID, "test-store").await;
-    let store_id = store["data"]["id"].as_str().unwrap();
-    let created = create_memory(&server, TENANT_ID, store_id, "remember me").await;
+    let store_name = store["data"]["name"].as_str().unwrap();
+    let created = create_memory(&server, TENANT_ID, store_name, "remember me").await;
     let memory_id = created["data"]["id"].as_str().unwrap();
 
     let fetched = parse_response(
         server
             .get_memory(Parameters(GetMemoryParams {
                 tenant_id: TENANT_ID.to_string(),
-                store_id: store_id.to_string(),
+                store_name: store_name.to_string(),
                 memory_id: memory_id.to_string(),
             }))
             .await,
@@ -136,14 +136,14 @@ async fn get_memory_returns_created_entry() {
 async fn search_memories_finds_keyword_match() {
     let server = test_server().await;
     let store = create_store(&server, TENANT_ID, "test-store").await;
-    let store_id = store["data"]["id"].as_str().unwrap();
-    create_memory(&server, TENANT_ID, store_id, "alpha keyword match").await;
+    let store_name = store["data"]["name"].as_str().unwrap();
+    create_memory(&server, TENANT_ID, store_name, "alpha keyword match").await;
 
     let response = parse_response(
         server
             .search_memories(Parameters(SearchMemoriesParams {
                 tenant_id: TENANT_ID.to_string(),
-                store_id: store_id.to_string(),
+                store_name: store_name.to_string(),
                 query: "alpha".to_string(),
                 top_k: 10,
                 keyword: true,
@@ -163,15 +163,15 @@ async fn search_memories_finds_keyword_match() {
 async fn delete_memory_removes_entry() {
     let server = test_server().await;
     let store = create_store(&server, TENANT_ID, "test-store").await;
-    let store_id = store["data"]["id"].as_str().unwrap();
-    let created = create_memory(&server, TENANT_ID, store_id, "delete me").await;
+    let store_name = store["data"]["name"].as_str().unwrap();
+    let created = create_memory(&server, TENANT_ID, store_name, "delete me").await;
     let memory_id = created["data"]["id"].as_str().unwrap();
 
     let deleted = parse_response(
         server
             .delete_memory(Parameters(DeleteMemoryParams {
                 tenant_id: TENANT_ID.to_string(),
-                store_id: store_id.to_string(),
+                store_name: store_name.to_string(),
                 memory_id: memory_id.to_string(),
             }))
             .await,
@@ -183,7 +183,7 @@ async fn delete_memory_removes_entry() {
         server
             .get_memory(Parameters(GetMemoryParams {
                 tenant_id: TENANT_ID.to_string(),
-                store_id: store_id.to_string(),
+                store_name: store_name.to_string(),
                 memory_id: memory_id.to_string(),
             }))
             .await,
@@ -196,9 +196,9 @@ async fn delete_memory_removes_entry() {
 async fn create_edge_returns_created_relationship() {
     let server = test_server().await;
     let store = create_store(&server, TENANT_ID, "test-store").await;
-    let store_id = store["data"]["id"].as_str().unwrap();
-    let source = create_memory(&server, TENANT_ID, store_id, "Node A").await;
-    let target = create_memory(&server, TENANT_ID, store_id, "Node B").await;
+    let store_name = store["data"]["name"].as_str().unwrap();
+    let source = create_memory(&server, TENANT_ID, store_name, "Node A").await;
+    let target = create_memory(&server, TENANT_ID, store_name, "Node B").await;
     let source_id = source["data"]["id"].as_str().unwrap();
     let target_id = target["data"]["id"].as_str().unwrap();
 
@@ -206,7 +206,7 @@ async fn create_edge_returns_created_relationship() {
         server
             .create_edge(Parameters(CreateEdgeParams {
                 tenant_id: TENANT_ID.to_string(),
-                store_id: store_id.to_string(),
+                store_name: store_name.to_string(),
                 source_memory_id: source_id.to_string(),
                 target_memory_id: target_id.to_string(),
                 relation_type: "related_to".to_string(),
@@ -225,9 +225,9 @@ async fn create_edge_returns_created_relationship() {
 async fn graph_traverse_returns_neighboring_nodes() {
     let server = test_server().await;
     let store = create_store(&server, TENANT_ID, "test-store").await;
-    let store_id = store["data"]["id"].as_str().unwrap();
-    let source = create_memory(&server, TENANT_ID, store_id, "Node A").await;
-    let target = create_memory(&server, TENANT_ID, store_id, "Node B").await;
+    let store_name = store["data"]["name"].as_str().unwrap();
+    let source = create_memory(&server, TENANT_ID, store_name, "Node A").await;
+    let target = create_memory(&server, TENANT_ID, store_name, "Node B").await;
     let source_id = source["data"]["id"].as_str().unwrap();
     let target_id = target["data"]["id"].as_str().unwrap();
 
@@ -235,7 +235,7 @@ async fn graph_traverse_returns_neighboring_nodes() {
         server
             .create_edge(Parameters(CreateEdgeParams {
                 tenant_id: TENANT_ID.to_string(),
-                store_id: store_id.to_string(),
+                store_name: store_name.to_string(),
                 source_memory_id: source_id.to_string(),
                 target_memory_id: target_id.to_string(),
                 relation_type: "related_to".to_string(),
@@ -248,7 +248,7 @@ async fn graph_traverse_returns_neighboring_nodes() {
         server
             .traverse_graph(Parameters(GraphTraverseParams {
                 tenant_id: TENANT_ID.to_string(),
-                store_id: store_id.to_string(),
+                store_name: store_name.to_string(),
                 start_memory_id: source_id.to_string(),
                 depth: 1,
                 relation_types: None,
@@ -269,19 +269,19 @@ async fn graph_traverse_returns_neighboring_nodes() {
 async fn store_stats_returns_store_statistics() {
     let server = test_server().await;
     let store = create_store(&server, TENANT_ID, "test-store").await;
-    let store_id = store["data"]["id"].as_str().unwrap();
+    let store_name = store["data"]["name"].as_str().unwrap();
 
     let response = parse_response(
         server
             .store_stats(Parameters(StoreStatsParams {
                 tenant_id: TENANT_ID.to_string(),
-                store_id: store_id.to_string(),
+                store_name: store_name.to_string(),
             }))
             .await,
     );
 
     assert_eq!(response["success"], json!(true));
-    assert_eq!(response["data"]["store_id"], json!(store_id));
+    assert!(response["data"]["store_id"].is_string());
     assert_eq!(response["data"]["tenant_id"], json!(TENANT_ID));
     assert_eq!(response["data"]["total_entries"], json!(0));
 }
@@ -300,16 +300,13 @@ async fn create_store_rejects_empty_tenant_id() {
 }
 
 #[tokio::test]
-async fn create_memory_rejects_invalid_store_id() {
+async fn create_memory_rejects_nonexistent_store() {
     let server = test_server().await;
 
-    let response = create_memory(&server, TENANT_ID, "not-a-uuid", "bad store id").await;
+    let response = create_memory(&server, TENANT_ID, "nonexistent-store", "bad store").await;
 
     assert_eq!(response["success"], json!(false));
-    assert!(response["error"]
-        .as_str()
-        .unwrap()
-        .contains("invalid UUID 'not-a-uuid'"));
+    assert!(response["error"].as_str().unwrap().contains("not found"));
 }
 
 // ---------------------------------------------------------------------------
@@ -355,12 +352,12 @@ async fn test_server_with_embedder() -> Kd6McpServer {
 async fn mcp_create_memory_produces_embedding() {
     let server = test_server_with_embedder().await;
     let store = create_store(&server, TENANT_ID, "embed-store").await;
-    let store_id = store["data"]["id"].as_str().unwrap();
+    let store_name = store["data"]["name"].as_str().unwrap();
 
     let response = create_memory(
         &server,
         TENANT_ID,
-        store_id,
+        store_name,
         "embeddings should be auto-computed",
     )
     .await;
@@ -378,7 +375,7 @@ async fn mcp_create_memory_produces_embedding() {
 async fn mcp_vector_search_returns_results() {
     let server = test_server_with_embedder().await;
     let store = create_store(&server, TENANT_ID, "search-embed-store").await;
-    let store_id = store["data"]["id"].as_str().unwrap();
+    let store_name = store["data"]["name"].as_str().unwrap();
 
     // Add documents with varying content lengths for distinct embeddings
     for text in [
@@ -386,7 +383,7 @@ async fn mcp_vector_search_returns_results() {
         "a medium length document about many topics",
         "another quite different and longer document for testing purposes here",
     ] {
-        create_memory(&server, TENANT_ID, store_id, text).await;
+        create_memory(&server, TENANT_ID, store_name, text).await;
     }
 
     // Vector search
@@ -394,7 +391,7 @@ async fn mcp_vector_search_returns_results() {
         server
             .search_memories(Parameters(SearchMemoriesParams {
                 tenant_id: TENANT_ID.to_string(),
-                store_id: store_id.to_string(),
+                store_name: store_name.to_string(),
                 query: "short".to_string(),
                 top_k: 3,
                 keyword: false,
@@ -415,15 +412,15 @@ async fn mcp_noop_embedder_allows_keyword_search() {
     // With NoopEmbedder, keyword search should still work
     let server = test_server().await;
     let store = create_store(&server, TENANT_ID, "keyword-only-store").await;
-    let store_id = store["data"]["id"].as_str().unwrap();
+    let store_name = store["data"]["name"].as_str().unwrap();
 
-    create_memory(&server, TENANT_ID, store_id, "unique keyword testphrase").await;
+    create_memory(&server, TENANT_ID, store_name, "unique keyword testphrase").await;
 
     let response = parse_response(
         server
             .search_memories(Parameters(SearchMemoriesParams {
                 tenant_id: TENANT_ID.to_string(),
-                store_id: store_id.to_string(),
+                store_name: store_name.to_string(),
                 query: "testphrase".to_string(),
                 top_k: 10,
                 keyword: true,
@@ -449,14 +446,14 @@ async fn mcp_gdpr_purge_deletes_scoped_memories() {
             }))
             .await,
     );
-    let store_id = store_response["data"]["id"].as_str().unwrap().to_string();
+    let store_name = store_response["data"]["name"].as_str().unwrap().to_string();
 
     // Create two memories with different scopes
     let _ = parse_response(
         server
             .create_memory(Parameters(CreateMemoryParams {
                 tenant_id: TENANT_ID.to_string(),
-                store_id: store_id.clone(),
+                store_name: store_name.clone(),
                 content: json!("user-a data"),
                 layer: "working".to_string(),
                 owner_agent_id: "test-agent".to_string(),
@@ -469,7 +466,7 @@ async fn mcp_gdpr_purge_deletes_scoped_memories() {
         server
             .create_memory(Parameters(CreateMemoryParams {
                 tenant_id: TENANT_ID.to_string(),
-                store_id: store_id.clone(),
+                store_name: store_name.clone(),
                 content: json!("user-b data"),
                 layer: "working".to_string(),
                 owner_agent_id: "test-agent".to_string(),
@@ -484,7 +481,7 @@ async fn mcp_gdpr_purge_deletes_scoped_memories() {
         server
             .gdpr_purge(Parameters(GdprPurgeParams {
                 tenant_id: TENANT_ID.to_string(),
-                store_id: store_id.clone(),
+                store_name: store_name.clone(),
                 scope_user_id: Some("user-a".to_string()),
                 ..Default::default()
             }))
@@ -498,7 +495,7 @@ async fn mcp_gdpr_purge_deletes_scoped_memories() {
         server
             .search_memories(Parameters(SearchMemoriesParams {
                 tenant_id: TENANT_ID.to_string(),
-                store_id: store_id.clone(),
+                store_name: store_name.clone(),
                 query: "user-b".to_string(),
                 top_k: 10,
                 keyword: true,
