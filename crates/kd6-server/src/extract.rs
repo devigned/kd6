@@ -52,12 +52,10 @@ impl FromRequestParts<AppState> for TenantId {
     }
 }
 
-/// Resolved store identifier -- either a concrete UUID or the `_default` alias.
+/// Resolved store identifier — a store name (unique per tenant).
+/// Store names are immutable after creation and used directly in URL paths.
 #[derive(Debug, Clone)]
-pub enum StoreRef {
-    Id(Uuid),
-    Default,
-}
+pub struct StoreRef(pub String);
 
 impl<'de> serde::Deserialize<'de> for StoreRef {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -65,13 +63,10 @@ impl<'de> serde::Deserialize<'de> for StoreRef {
         D: serde::Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        if s == DEFAULT_STORE_ALIAS {
-            Ok(StoreRef::Default)
-        } else {
-            Uuid::parse_str(&s)
-                .map(StoreRef::Id)
-                .map_err(serde::de::Error::custom)
+        if s.is_empty() {
+            return Err(serde::de::Error::custom("store name cannot be empty"));
         }
+        Ok(StoreRef(s))
     }
 }
 
@@ -136,35 +131,40 @@ where
     }
 }
 
-/// Resolve a `StoreRef` to a concrete UUID. When the reference is `_default`
-/// and auto-provisioning is enabled, the default store is created on demand.
+/// Resolve a `StoreRef` (store name) to a concrete UUID.
+/// When the name is `_default` and auto-provisioning is enabled,
+/// the default store is created on demand.
 pub async fn resolve_store(
     store_ref: &StoreRef,
     tenant_id: &str,
     state: &AppState,
 ) -> Result<Uuid, kd6_core::OmsError> {
-    match store_ref {
-        StoreRef::Id(id) => Ok(*id),
-        StoreRef::Default => {
-            if !state.config.auto_provision {
-                return Err(kd6_core::OmsError::InvalidInput(
-                    "_default store alias is disabled; create a store explicitly".into(),
-                ));
-            }
-            let store = state
-                .provider
-                .get_or_create_store(
-                    tenant_id,
-                    DEFAULT_STORE_ALIAS,
-                    kd6_core::models::CreateStoreRequest {
-                        name: DEFAULT_STORE_ALIAS.to_string(),
-                        region: None,
-                        config: Default::default(),
-                        metadata: Default::default(),
-                    },
-                )
-                .await?;
-            Ok(store.id)
+    let name = &store_ref.0;
+
+    // Auto-provision the _default store on first access
+    if name == DEFAULT_STORE_ALIAS {
+        if !state.config.auto_provision {
+            return Err(kd6_core::OmsError::InvalidInput(
+                "_default store alias is disabled; create a store explicitly".into(),
+            ));
         }
+        let store = state
+            .provider
+            .get_or_create_store(
+                tenant_id,
+                DEFAULT_STORE_ALIAS,
+                kd6_core::models::CreateStoreRequest {
+                    name: DEFAULT_STORE_ALIAS.to_string(),
+                    region: None,
+                    config: Default::default(),
+                    metadata: Default::default(),
+                },
+            )
+            .await?;
+        return Ok(store.id);
     }
+
+    // Look up store by name
+    let store = state.provider.get_store_by_name(tenant_id, name).await?;
+    Ok(store.id)
 }
