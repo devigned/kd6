@@ -1,19 +1,24 @@
 use std::sync::Arc;
 
-use kd6_core::OmsProvider;
+use kd6_core::{EmbeddingProvider, NoopEmbedder, OmsProvider};
 use kd6_mcp::{
-    CreateEdgeParams, CreateMemoryParams, CreateStoreParams, DeleteMemoryParams, GetMemoryParams,
-    GraphTraverseParams, ListStoresParams, Kd6McpServer, SearchMemoriesParams, StoreStatsParams,
+    CreateEdgeParams, CreateMemoryParams, CreateStoreParams, DeleteMemoryParams, GdprPurgeParams,
+    GetMemoryParams, GraphTraverseParams, Kd6McpServer, ListStoresParams, SearchMemoriesParams,
+    StoreStatsParams,
 };
 use kd6_sqlite::SqliteProvider;
 use rmcp::handler::server::wrapper::Parameters;
+use rmcp::ServerHandler;
 use serde_json::{json, Value};
 
 const TENANT_ID: &str = "tenant-1";
 
 async fn test_server() -> Kd6McpServer {
     let provider = SqliteProvider::new("sqlite::memory:").await.unwrap();
-    Kd6McpServer::new(Arc::new(provider) as Arc<dyn OmsProvider>)
+    Kd6McpServer::new(
+        Arc::new(provider) as Arc<dyn OmsProvider>,
+        Arc::new(NoopEmbedder),
+    )
 }
 
 fn parse_response(response: String) -> Value {
@@ -43,10 +48,10 @@ async fn create_memory(
                 tenant_id: tenant_id.to_string(),
                 store_id: store_id.to_string(),
                 layer: "working".to_string(),
-                content: content.to_string(),
+                content: json!(content),
                 owner_agent_id: "agent-1".to_string(),
                 tags: vec!["test".to_string()],
-                entity_type: None,
+                ..Default::default()
             }))
             .await,
     )
@@ -101,10 +106,7 @@ async fn create_memory_returns_created_entry() {
 
     assert_eq!(response["success"], json!(true));
     assert_eq!(response["data"]["store_id"], json!(store_id));
-    assert_eq!(
-        response["data"]["content"],
-        json!({"text": "remember this"})
-    );
+    assert_eq!(response["data"]["content"], json!("remember this"));
 }
 
 #[tokio::test]
@@ -127,7 +129,7 @@ async fn get_memory_returns_created_entry() {
 
     assert_eq!(fetched["success"], json!(true));
     assert_eq!(fetched["data"]["id"], json!(memory_id));
-    assert_eq!(fetched["data"]["content"], json!({"text": "remember me"}));
+    assert_eq!(fetched["data"]["content"], json!("remember me"));
 }
 
 #[tokio::test]
@@ -153,7 +155,7 @@ async fn search_memories_finds_keyword_match() {
     assert_eq!(response["data"].as_array().unwrap().len(), 1);
     assert_eq!(
         response["data"][0]["entry"]["content"],
-        json!({"text": "alpha keyword match"})
+        json!("alpha keyword match")
     );
 }
 
@@ -244,7 +246,7 @@ async fn graph_traverse_returns_neighboring_nodes() {
 
     let response = parse_response(
         server
-            .graph_traverse(Parameters(GraphTraverseParams {
+            .traverse_graph(Parameters(GraphTraverseParams {
                 tenant_id: TENANT_ID.to_string(),
                 store_id: store_id.to_string(),
                 start_memory_id: source_id.to_string(),
@@ -308,4 +310,250 @@ async fn create_memory_rejects_invalid_store_id() {
         .as_str()
         .unwrap()
         .contains("invalid UUID 'not-a-uuid'"));
+}
+
+// ---------------------------------------------------------------------------
+// Embedding-aware MCP tests
+// ---------------------------------------------------------------------------
+
+/// Deterministic fake embedder for tests (avoids slow model download).
+/// Produces 3-dimensional vectors based on text length.
+struct FakeEmbedder;
+
+#[async_trait::async_trait]
+impl EmbeddingProvider for FakeEmbedder {
+    async fn embed_texts(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, kd6_core::OmsError> {
+        Ok(texts
+            .iter()
+            .map(|t| {
+                let len = t.len() as f32;
+                vec![len, len * 0.5, 1.0]
+            })
+            .collect())
+    }
+    async fn embed_query(&self, query: &str) -> Result<Vec<f32>, kd6_core::OmsError> {
+        let len = query.len() as f32;
+        Ok(vec![len, len * 0.5, 1.0])
+    }
+    fn dimensions(&self) -> usize {
+        3
+    }
+    fn model_id(&self) -> &str {
+        "fake-3d"
+    }
+}
+
+async fn test_server_with_embedder() -> Kd6McpServer {
+    let provider = SqliteProvider::new("sqlite::memory:").await.unwrap();
+    Kd6McpServer::new(
+        Arc::new(provider) as Arc<dyn OmsProvider>,
+        Arc::new(FakeEmbedder) as Arc<dyn EmbeddingProvider>,
+    )
+}
+
+#[tokio::test]
+async fn mcp_create_memory_produces_embedding() {
+    let server = test_server_with_embedder().await;
+    let store = create_store(&server, TENANT_ID, "embed-store").await;
+    let store_id = store["data"]["id"].as_str().unwrap();
+
+    let response = create_memory(
+        &server,
+        TENANT_ID,
+        store_id,
+        "embeddings should be auto-computed",
+    )
+    .await;
+
+    assert_eq!(response["success"], json!(true));
+    assert!(
+        response["data"]["embedding"].is_array(),
+        "MCP create_memory should auto-embed when embedder is configured"
+    );
+    let dims = response["data"]["embedding"].as_array().unwrap().len();
+    assert_eq!(dims, 3, "FakeEmbedder produces 3-dim vectors");
+}
+
+#[tokio::test]
+async fn mcp_vector_search_returns_results() {
+    let server = test_server_with_embedder().await;
+    let store = create_store(&server, TENANT_ID, "search-embed-store").await;
+    let store_id = store["data"]["id"].as_str().unwrap();
+
+    // Add documents with varying content lengths for distinct embeddings
+    for text in [
+        "short",
+        "a medium length document about many topics",
+        "another quite different and longer document for testing purposes here",
+    ] {
+        create_memory(&server, TENANT_ID, store_id, text).await;
+    }
+
+    // Vector search
+    let response = parse_response(
+        server
+            .search_memories(Parameters(SearchMemoriesParams {
+                tenant_id: TENANT_ID.to_string(),
+                store_id: store_id.to_string(),
+                query: "short".to_string(),
+                top_k: 3,
+                keyword: false,
+            }))
+            .await,
+    );
+
+    assert_eq!(response["success"], json!(true));
+    let results = response["data"].as_array().unwrap();
+    assert!(
+        !results.is_empty(),
+        "vector search should return results with FakeEmbedder"
+    );
+}
+
+#[tokio::test]
+async fn mcp_noop_embedder_allows_keyword_search() {
+    // With NoopEmbedder, keyword search should still work
+    let server = test_server().await;
+    let store = create_store(&server, TENANT_ID, "keyword-only-store").await;
+    let store_id = store["data"]["id"].as_str().unwrap();
+
+    create_memory(&server, TENANT_ID, store_id, "unique keyword testphrase").await;
+
+    let response = parse_response(
+        server
+            .search_memories(Parameters(SearchMemoriesParams {
+                tenant_id: TENANT_ID.to_string(),
+                store_id: store_id.to_string(),
+                query: "testphrase".to_string(),
+                top_k: 10,
+                keyword: true,
+            }))
+            .await,
+    );
+
+    assert_eq!(response["success"], json!(true));
+    let results = response["data"].as_array().unwrap();
+    assert_eq!(results.len(), 1, "keyword search should find the document");
+}
+
+#[tokio::test]
+async fn mcp_gdpr_purge_deletes_scoped_memories() {
+    let server = test_server().await;
+
+    // Create a store
+    let store_response = parse_response(
+        server
+            .create_store(Parameters(CreateStoreParams {
+                tenant_id: TENANT_ID.to_string(),
+                name: "gdpr-test".to_string(),
+            }))
+            .await,
+    );
+    let store_id = store_response["data"]["id"].as_str().unwrap().to_string();
+
+    // Create two memories with different scopes
+    let _ = parse_response(
+        server
+            .create_memory(Parameters(CreateMemoryParams {
+                tenant_id: TENANT_ID.to_string(),
+                store_id: store_id.clone(),
+                content: json!("user-a data"),
+                layer: "working".to_string(),
+                owner_agent_id: "test-agent".to_string(),
+                scope_user_id: Some("user-a".to_string()),
+                ..Default::default()
+            }))
+            .await,
+    );
+    let _ = parse_response(
+        server
+            .create_memory(Parameters(CreateMemoryParams {
+                tenant_id: TENANT_ID.to_string(),
+                store_id: store_id.clone(),
+                content: json!("user-b data"),
+                layer: "working".to_string(),
+                owner_agent_id: "test-agent".to_string(),
+                scope_user_id: Some("user-b".to_string()),
+                ..Default::default()
+            }))
+            .await,
+    );
+
+    // Purge user-a
+    let purge_response = parse_response(
+        server
+            .gdpr_purge(Parameters(GdprPurgeParams {
+                tenant_id: TENANT_ID.to_string(),
+                store_id: store_id.clone(),
+                scope_user_id: Some("user-a".to_string()),
+                ..Default::default()
+            }))
+            .await,
+    );
+    assert_eq!(purge_response["success"], json!(true));
+    assert_eq!(purge_response["data"]["deleted"], json!(1));
+
+    // Verify user-b's data still exists via search
+    let search_response = parse_response(
+        server
+            .search_memories(Parameters(SearchMemoriesParams {
+                tenant_id: TENANT_ID.to_string(),
+                store_id: store_id.clone(),
+                query: "user-b".to_string(),
+                top_k: 10,
+                keyword: true,
+            }))
+            .await,
+    );
+    assert_eq!(search_response["success"], json!(true));
+    let results = search_response["data"].as_array().unwrap();
+    assert_eq!(results.len(), 1, "user-b data should survive purge");
+}
+
+// ---------------------------------------------------------------------------
+// MCP transport smoke tests
+// ---------------------------------------------------------------------------
+
+/// Verify the server registers exactly the expected 10 tools.
+#[tokio::test]
+async fn test_mcp_tool_registration() {
+    let server = test_server().await;
+    let tools = server.list_tools();
+    let tool_names: std::collections::BTreeSet<String> =
+        tools.iter().map(|t| t.name.to_string()).collect();
+
+    let expected: std::collections::BTreeSet<String> = [
+        "create_store",
+        "list_stores",
+        "store_stats",
+        "create_memory",
+        "get_memory",
+        "search_memories",
+        "delete_memory",
+        "create_edge",
+        "traverse_graph",
+        "gdpr_purge",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+
+    assert_eq!(
+        tool_names, expected,
+        "registered tools mismatch: got {tool_names:?}"
+    );
+}
+
+/// Verify server metadata (name, version) is set correctly.
+#[tokio::test]
+async fn test_mcp_server_info() {
+    let server = test_server().await;
+    let info = server.get_info();
+
+    assert_eq!(info.server_info.name, "kd6");
+    assert_eq!(info.server_info.version, "0.1.0");
+    assert!(
+        info.instructions.is_some(),
+        "server should have instructions"
+    );
 }

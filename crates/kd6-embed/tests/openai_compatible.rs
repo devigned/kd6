@@ -235,7 +235,10 @@ async fn test_api_key_sent_as_bearer() {
 
     Mock::given(method("POST"))
         .and(path("/embeddings"))
-        .and(wiremock::matchers::header("authorization", "Bearer sk-test-key"))
+        .and(wiremock::matchers::header(
+            "authorization",
+            "Bearer sk-test-key",
+        ))
         .respond_with(embedding_response(vec![(0, vec![1.0, 2.0])]))
         .mount(&server)
         .await;
